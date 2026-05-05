@@ -45,7 +45,7 @@ It does four things on each cycle:
 from datetime import datetime
 
 from config import Config, log
-from models import ExitReason
+from models import ExitReason, Trade
 from database import DatabaseManager
 from orders import OrderManager
 from protection import ProtectionEngine
@@ -67,27 +67,50 @@ class TradeMonitor:
 
     def sync_with_broker(self):
         """
-        Reconcile DB open trades against actual Dhan holdings.
-        Any trade open in DB but absent from holdings = broker already exited it.
-        No-op in paper trade mode.
+        Two-way reconciliation between Dhan holdings and the local DB.
+
+        Direction 1 — Dhan → DB (close):
+          DB trade is OPEN but symbol no longer in Dhan holdings.
+          Broker already fired the SL order. Mark it CLOSED with "BROKER_EXECUTED".
+
+        Direction 2 — Dhan → DB (import):
+          Dhan has a holding that has no matching OPEN trade in DB.
+          Could be a manual buy in the Dhan app, or a crash before DB write.
+          Import it as an OPEN trade with conservative defaults so the
+          monitor and screener know about it.
+
+        Direction 3 — DB → Dhan (re-place SL):
+          DB trade is OPEN and symbol is in Dhan, but sl_order_id is empty.
+          The SL order was never placed or was lost. Re-place it now so the
+          position is protected at the exchange level.
+
+        No-op in BACKTEST_MODE (no real broker to talk to).
         """
-        if Config.PAPER_TRADE or not self.order_mgr.dhan:
+        if Config.BACKTEST_MODE or not self.order_mgr.dhan:
             return
+
         try:
             resp = self.order_mgr.dhan.get_holdings()
             holdings = resp.get("data", []) if isinstance(resp, dict) else []
-            held_symbols = {
-                h.get("tradingSymbol") or h.get("symbol", "")
-                for h in holdings
-                if (h.get("availableQty", 0) or h.get("totalQty", 0)) > 0
-            }
+            held_map = {}
+            for h in holdings:
+                sym = h.get("tradingSymbol") or h.get("symbol", "")
+                qty = int(h.get("availableQty", 0) or h.get("totalQty", 0) or 0)
+                if sym and qty > 0:
+                    avg_cost = float(
+                        h.get("avgCostPrice") or h.get("costPrice") or
+                        h.get("buyAvg") or h.get("avgBuyPrice") or 0
+                    )
+                    held_map[sym] = {"qty": qty, "avg_cost": avg_cost}
         except Exception as e:
             log.error(f"Broker sync failed: {e}")
             return
 
-        for trade in self.db.get_open_trades():
-            symbol = trade["symbol"]
-            if symbol in held_symbols:
+        db_open = {t["symbol"]: t for t in self.db.get_open_trades()}
+
+        # --- Direction 1: DB OPEN but not in Dhan → broker already closed it ---
+        for symbol, trade in db_open.items():
+            if symbol in held_map:
                 continue
 
             exit_price = trade["current_sl"]
@@ -109,8 +132,77 @@ class TradeMonitor:
                 trade["trade_id"], exit_price, "BROKER_EXECUTED",
                 pnl["net_pnl"], pnl["gross_pnl"], pnl["total_charges"]
             )
-            log.info(f"BROKER SYNC: {symbol} closed @ ₹{exit_price:.2f} | Net: ₹{pnl['net_pnl']:.2f}")
+            log.info(f"SYNC ← {symbol} closed by broker @ ₹{exit_price:.2f} | Net: ₹{pnl['net_pnl']:.2f}")
             self.protection.start_loss_cooldown()
+
+        # --- Direction 2: Dhan has holding not in DB → import it ---
+        for symbol, holding in held_map.items():
+            if symbol in db_open:
+                continue
+            if symbol not in self.order_mgr.SECURITY_IDS:
+                # Not a symbol we trade — ignore (MFs, other equities, etc.)
+                continue
+
+            avg_cost = holding["avg_cost"]
+            qty      = holding["qty"]
+            if avg_cost <= 0:
+                log.warning(f"SYNC → {symbol} found in Dhan but avg_cost unknown — skipping import")
+                continue
+
+            # Use ATR-based SL (same logic as the rest of the system).
+            # SWING multiplier (1.5) is the safest general default for an unknown-strategy import.
+            # Fall back to 5% only if stock_snapshots has no ATR data yet (e.g. first-ever run).
+            atr_row = self.db.fetchone(
+                "SELECT atr FROM stock_snapshots WHERE symbol=? AND atr > 0 ORDER BY date DESC LIMIT 1",
+                (symbol,)
+            )
+            if atr_row and atr_row["atr"]:
+                atr    = atr_row["atr"]
+                sl     = round(avg_cost - atr * Config.ATR_MULT["SWING"], 2)
+                target = round(avg_cost + (avg_cost - sl) * Config.MIN_RR_RATIO, 2)
+                sl_method = f"ATR {atr:.2f} × {Config.ATR_MULT['SWING']}"
+            else:
+                sl     = round(avg_cost * 0.95, 2)
+                target = round(avg_cost * 1.10, 2)
+                sl_method = "5% fallback (no ATR data yet)"
+
+            # Safety: SL must be below entry and above zero
+            sl = max(sl, round(avg_cost * 0.90, 2))
+            sl = min(sl, avg_cost - 0.01)
+
+            trade_id = f"IMPORTED_{symbol}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            trade = Trade(
+                trade_id=trade_id,
+                symbol=symbol,
+                strategy="IMPORTED",
+                entry_date=datetime.now().strftime("%Y-%m-%d"),
+                entry_price=avg_cost,
+                quantity=qty,
+                initial_sl=sl,
+                initial_target=target,
+                current_sl=sl,
+                current_price=avg_cost,
+                remaining_qty=qty,
+                market_mode_at_entry="IMPORTED",
+            )
+            self.db.save_trade(trade)
+            log.info(f"SYNC → {symbol} imported | {qty}×₹{avg_cost:.2f} | SL ₹{sl:.2f} ({sl_method}) | T ₹{target:.2f}")
+
+        # --- Direction 3: DB OPEN + in Dhan but SL order missing → re-place SL ---
+        # Refresh after imports so newly imported trades are also covered.
+        db_open = {t["symbol"]: t for t in self.db.get_open_trades()}
+        for symbol, trade in db_open.items():
+            if symbol not in held_map:
+                continue
+            if trade["sl_order_id"]:
+                continue
+            sl = trade["current_sl"]
+            if not sl or sl <= 0:
+                continue
+            new_id = self.order_mgr.replace_sl_order(symbol, trade["remaining_qty"], sl, "")
+            if new_id:
+                self.db.update_sl_order_id(trade["trade_id"], new_id)
+                log.info(f"SYNC → {symbol} SL order re-placed @ ₹{sl:.2f} | id: {new_id}")
 
     def monitor_all_trades(self, current_prices: dict, vix: float):
         """
@@ -146,8 +238,8 @@ class TradeMonitor:
         entry    = trade["entry_price"]
         qty      = trade["remaining_qty"]
 
-        # SL hit — paper only; in live mode the broker's SL order handles this
-        if Config.PAPER_TRADE and price <= sl:
+        # SL hit — backtest mode only; in live/sandbox the broker's SL order handles this
+        if Config.BACKTEST_MODE and price <= sl:
             log.warning(f"SL HIT: {symbol} @ ₹{price:.2f} (SL: ₹{sl:.2f})")
             self._execute_exit(trade, price, qty, ExitReason.SL_HIT.value)
             self.protection.start_loss_cooldown()
@@ -250,7 +342,7 @@ class TradeMonitor:
         trade_id = trade["trade_id"]
 
         sold = self.order_mgr.place_sell_order(symbol, qty, price, reason)
-        if not sold and not Config.PAPER_TRADE:
+        if not sold and not Config.BACKTEST_MODE:
             log.error(f"EXIT ORDER FAILED: {symbol}")
             return
 

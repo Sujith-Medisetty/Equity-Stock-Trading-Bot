@@ -76,13 +76,14 @@ class TradingSystem:
         self.analytics     = PerformanceAnalytics(self.db)
         self.briefing      = MorningBriefing(self.db)
 
-        self.market_mode   = MarketMode.CAUTIOUS
-        self.fii_flow      = FIIFlow.NEUTRAL
-        self.vix           = 15.0
-        self.fii_net       = 0.0
-        self.stocks_data   = {}
-        self.nifty_data    = None
-        self.todays_setups = []
+        self.market_mode       = MarketMode.CAUTIOUS
+        self.fii_flow          = FIIFlow.NEUTRAL
+        self.vix               = 15.0
+        self.fii_net           = 0.0
+        self.stocks_data       = {}
+        self.nifty_data        = None
+        self.todays_setups     = []
+        self.available_capital = float(Config.TOTAL_CAPITAL)  # refreshed in step1
 
         # On startup: immediately reconcile DB against actual Dhan holdings.
         # Catches any SL orders the broker executed since last run (overnight, weekend).
@@ -131,7 +132,10 @@ class TradingSystem:
 
         events = self.collector.fetch_events_calendar()
         self.collector.save_events(events)
-        log.info(f"Data collected: {len(self.stocks_data)} stocks | VIX: {self.vix:.1f} | FII: ₹{self.fii_net:.0f}Cr")
+
+        self.available_capital = self.order_mgr.get_available_capital()
+        log.info(f"Data collected: {len(self.stocks_data)} stocks | VIX: {self.vix:.1f} | "
+                 f"FII: ₹{self.fii_net:.0f}Cr | Available capital: ₹{self.available_capital:,.0f}")
 
     # =========================================================================
     # STEP 2: Market mode detection (9:00 AM)
@@ -204,7 +208,7 @@ class TradingSystem:
                 fii_sector_buying=fii_sector_buying
             )
             if setup:
-                setup = self.risk_mgr.calculate_setup_risk(setup, data)
+                setup = self.risk_mgr.calculate_setup_risk(setup, data, self.available_capital)
                 if setup.status != "SKIPPED":
                     self.db.save_setup(setup)
                     setups.append(setup)
@@ -228,7 +232,7 @@ class TradingSystem:
     # STEP 5: Execute trades (9:30 AM)
     # For each approved setup (score >= 60, checklist passed):
     # place the entry order + SL order at the broker.
-    # Stops adding new trades once MAX_SIMULTANEOUS_TRADES (4) is reached.
+    # Stops adding new trades once effective_max_trades(available_capital) is reached.
     # The full pre-trade checklist (10 conditions) runs here as the final gate.
     # =========================================================================
 
@@ -239,15 +243,22 @@ class TradingSystem:
             log.warning(f"Trading blocked: {reason}")
             return
 
+        if self.available_capital < Config.MIN_TRADE_CAPITAL:
+            log.warning(
+                f"INSUFFICIENT CAPITAL: ₹{self.available_capital:,.0f} available — "
+                f"minimum required is ₹{Config.MIN_TRADE_CAPITAL:,}. No new trades placed."
+            )
+            return
+
         open_trades = list(self.db.get_open_trades())
         for setup in setups:
-            if len(open_trades) >= Config.MAX_SIMULTANEOUS_TRADES:
+            if len(open_trades) >= Config.effective_max_trades(self.available_capital):
                 break
             if setup.score < 60:
                 continue
 
             approved, failed = self.risk_mgr.run_pre_trade_checklist(
-                setup, self.market_mode, self.vix, open_trades
+                setup, self.market_mode, self.vix, open_trades, self.available_capital
             )
             if not approved:
                 setup.status = "SKIPPED"
@@ -316,7 +327,7 @@ class TradingSystem:
 
     def step7_end_of_day(self):
         log.info("STEP 7: End of day tasks...")
-        self.analytics.print_dashboard()
+        self.analytics.print_dashboard(self.available_capital)
         if self.protection.check_consecutive_losses():
             log.warning("3 CONSECUTIVE LOSSES — Review your system.")
         tax = self.analytics.tax_summary()
@@ -411,6 +422,6 @@ class TradingSystem:
         print("RUNNING SINGLE TEST CYCLE")
         print("=" * 60 + "\n")
         self.run_daily()
-        self.analytics.print_dashboard()
+        self.analytics.print_dashboard(self.available_capital)
         tx = self.analytics.tax_summary()
         print(f"Tax this FY — STCG: ₹{tx['annual_stcg']:,.2f} | Tax: ₹{tx['total_tax']:,.2f}")

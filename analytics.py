@@ -119,16 +119,22 @@ class PerformanceAnalytics:
     def tax_summary(self) -> dict:
         return ChargesCalculator.annual_tax_summary(self.db.get_annual_stcg())
 
-    def print_dashboard(self):
+    def print_dashboard(self, available_capital: float = None):
         d  = self.daily_summary()
         m  = self.monthly_summary()
         tx = self.tax_summary()
+
+        max_trades = (
+            Config.effective_max_trades(available_capital)
+            if available_capital is not None
+            else Config.MAX_SIMULTANEOUS_TRADES
+        )
 
         print("\n" + "=" * 65)
         print("  NIFTY 50 SWING TRADING — DASHBOARD")
         print("=" * 65)
         print(f"  Date          : {d['date']}")
-        print(f"  Open Positions: {d['open_positions']} / {Config.MAX_SIMULTANEOUS_TRADES}")
+        print(f"  Open Positions: {d['open_positions']} / {max_trades}")
         print(f"\n  TODAY")
         print(f"     Closed : {d['trades_closed']}  ({d['wins']}W / {d['losses']}L)  WR: {d['win_rate']}%")
         print(f"     Realised   : ₹{d['realised_pnl']:,.2f}")

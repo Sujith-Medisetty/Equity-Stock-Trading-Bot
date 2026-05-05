@@ -8,7 +8,7 @@ Two things live here:
 Why everything is in one place:
 - Easy to review risk settings before going live
 - No magic numbers scattered across files
-- Switching paper → live is just one flag: PAPER_TRADE = False
+- PAPER_TRADE=True uses Dhan sandbox; PAPER_TRADE=False is live; BACKTEST_MODE=True is fully offline
 """
 
 import os
@@ -55,13 +55,13 @@ log = logging.getLogger("TradingSystem")
 class Config:
     """
     Every constant the system uses. Read-only at runtime — never mutate these
-    during execution except PAPER_TRADE which main.py flips for live mode.
+    during execution except PAPER_TRADE / BACKTEST_MODE which main.py flips.
 
-    Capital rules — designed for a ₹2L account:
-    - Max ₹50k per stock (25% concentration limit)
-    - Max ₹1500 loss per trade (0.75% of capital)
+    Capital rules (percentage-based, auto-scaled from live Dhan balance):
+    - Max 25% of available capital per stock
+    - Max 0.75% of available capital at risk per trade
     - Max 4 open positions simultaneously
-    - Max ₹6000 total portfolio risk at any time (sum of all open SL distances)
+    - Max 3% of available capital as total open portfolio risk
 
     Loss protection — cascading limits that pause trading:
     - ₹3000 daily loss  → stop for today
@@ -70,16 +70,47 @@ class Config:
     - ₹20000 drawdown   → full stop, review needed
     """
 
-    # --- Dhan API — set these as environment variables, never hardcode ---
+    # --- Dhan API credentials (live) ---
     DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID",    "YOUR_CLIENT_ID")
     DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
 
+    # --- Dhan sandbox credentials (paper trade) ---
+    # Get these from Dhan's sandbox portal — separate from your live account.
+    DHAN_SANDBOX_CLIENT_ID    = os.getenv("DHAN_SANDBOX_CLIENT_ID",    "YOUR_SANDBOX_CLIENT_ID")
+    DHAN_SANDBOX_ACCESS_TOKEN = os.getenv("DHAN_SANDBOX_ACCESS_TOKEN", "YOUR_SANDBOX_ACCESS_TOKEN")
+
     # --- Capital rules ---
-    TOTAL_CAPITAL           = 200000   # ₹2,00,000
-    MAX_CAPITAL_PER_TRADE   = 50000    # ₹50,000 max per stock
-    MAX_RISK_PER_TRADE      = 1500     # ₹1,500 max loss per trade
-    MAX_SIMULTANEOUS_TRADES = 4        # max open positions
-    MAX_PORTFOLIO_RISK      = 6000     # total open risk across all trades
+    # TOTAL_CAPITAL is used only in BACKTEST_MODE.
+    # In live/sandbox mode the actual available balance is fetched from Dhan
+    # via get_available_capital() on every step1 run, so limits auto-scale
+    # with your real portfolio as positions are added or closed.
+    TOTAL_CAPITAL           = 200000   # backtest fallback only
+
+    # Percentage-based limits — applied against live available capital at runtime.
+    CAPITAL_PER_TRADE_PCT   = 0.25     # max 25% of available capital per position
+    RISK_PER_TRADE_PCT      = 0.0075   # max 0.75% of available capital at risk per trade
+    PORTFOLIO_RISK_PCT      = 0.03     # max 3% total open risk across all trades
+
+    MAX_SIMULTANEOUS_TRADES = 4        # hard ceiling — never more than this regardless of capital
+
+    # Account-level floor: if available capital is below this, stop trading entirely.
+    # At ₹50k the 0.75% risk budget = ₹375 and target profit = ₹750.
+    # The DP charge (₹15.34 flat) is ~2% of that profit — still acceptable.
+    # Below ₹50k the flat fee becomes a meaningful drag and trades stop paying.
+    MIN_TRADE_CAPITAL       = 50000    # ₹50,000 — account floor to start any new trade
+
+    # Position-level floor: even if account capital is healthy, a specific trade
+    # can produce a tiny position (e.g. expensive stock, wide ATR → few shares).
+    # Below ₹15,000 position value the DP charge alone (₹15.34) is >5% of a
+    # typical profit target — not worth the risk for such a small return.
+    MIN_POSITION_VALUE      = 15000    # ₹15,000 — minimum position size per trade
+
+    # Minimum shares to make the 3-tier exit system meaningful.
+    # Tier 2 sells floor(qty/2) shares. With qty < 3:
+    #   qty=1 → tier 2 sells all 1 share, tier 3 never runs (position fully closed at tier 2)
+    #   qty=2 → tier 2 sells 1, tier 3 trails just 1 share (profit too small to matter)
+    #   qty=3 → tier 2 sells 1, tier 3 trails 2 shares properly ✓
+    MIN_QUANTITY            = 3        # minimum shares — below this the tiered exit breaks down
 
     # --- Loss protection limits ---
     DAILY_LOSS_LIMIT   = 3000
@@ -168,8 +199,34 @@ class Config:
     }
 
     # --- System settings ---
-    DB_PATH     = "trading.db"  # SQLite file — created automatically on first run
-    PAPER_TRADE = True          # True = no real orders placed. Set False for live trading.
+    DB_PATH      = "trading.db"  # SQLite file — created automatically on first run
+
+    # PAPER_TRADE = True  → uses Dhan's sandbox API (real order flow, simulated fills).
+    #                       Set DHAN_SANDBOX_CLIENT_ID / DHAN_SANDBOX_ACCESS_TOKEN env vars.
+    # PAPER_TRADE = False → live mode, real money, uses DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN.
+    PAPER_TRADE  = True
+
+    # BACKTEST_MODE = True → fully offline historical simulation.
+    #                        No broker API calls at all. Uses mock/historical OHLCV data.
+    #                        SL hits are checked manually against price each cycle.
+    BACKTEST_MODE = False
+
+    @staticmethod
+    def effective_max_trades(available_capital: float) -> int:
+        """
+        Returns how many simultaneous trades the current capital can support.
+        Each position must be worth at least MIN_POSITION_VALUE, so the limit is
+        floor(available_capital / MIN_POSITION_VALUE), capped at MAX_SIMULTANEOUS_TRADES.
+
+        Examples (MIN_POSITION_VALUE=₹15k, ceiling=4):
+          ₹2,00,000 → floor(200k/15k)=13 → 4
+          ₹80,000   → floor(80k/15k)=5   → 4
+          ₹60,000   → floor(60k/15k)=4   → 4
+          ₹50,000   → floor(50k/15k)=3   → 3
+          ₹30,000   → floor(30k/15k)=2   → 2
+        """
+        dynamic = max(1, int(available_capital / Config.MIN_POSITION_VALUE))
+        return min(Config.MAX_SIMULTANEOUS_TRADES, dynamic)
 
 
 class Watchlist:

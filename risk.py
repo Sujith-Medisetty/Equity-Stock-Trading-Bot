@@ -5,7 +5,7 @@ Two classes live here:
 
 1. RiskManager
    Sizes every trade so the maximum possible loss is exactly ₹1,500.
-   The formula: shares = MAX_RISK_PER_TRADE / risk_per_share
+   The formula: shares = (available_capital × RISK_PER_TRADE_PCT) / risk_per_share
    where risk_per_share = entry_price - stop_loss_price.
 
    Stop loss placement is strategy-specific:
@@ -48,23 +48,24 @@ class RiskManager:
     def __init__(self, db: DatabaseManager):
         self.db = db
 
-    def calculate_setup_risk(self, setup: Setup, stock_data: StockData) -> Setup:
+    def calculate_setup_risk(self, setup: Setup, stock_data: StockData,
+                              available_capital: float = None) -> Setup:
         """
         Fills in sl_price, target_price, shares, capital_required, actual_risk, rr_ratio.
         Sets setup.status = "SKIPPED" with a reason if the math doesn't work out.
 
-        SL placement logic:
-        - Base: entry − (ATR × multiplier from Config.ATR_MULT)
-        - BREAKOUT overrides to: bottom of consolidation box − half ATR
-          (SL sits below the zone that should now act as support)
-        - WEEK52 overrides to: old 52W high − 1.5 ATR
-          (the breakout level is now support; SL just below it)
-        - PULLBACK overrides to: EMA20 − 1 ATR
-          (we're entering at EMA20; if it breaks, the trend is broken)
+        Limits are derived from available_capital so they auto-scale with the account:
+          max capital per trade = available_capital × CAPITAL_PER_TRADE_PCT (25%)
+          max risk per trade    = available_capital × RISK_PER_TRADE_PCT    (0.75%)
 
-        Capping: if shares × entry > MAX_CAPITAL_PER_TRADE (₹50k),
-        we reduce shares to fit the capital limit. Risk may then be less than ₹1,500.
+        If shares × entry exceeds the capital cap, shares are reduced to fit.
+        Risk may then be less than the 0.75% target but the trade is still valid.
         """
+        if available_capital is None:
+            available_capital = float(Config.TOTAL_CAPITAL)
+        max_capital = available_capital * Config.CAPITAL_PER_TRADE_PCT
+        max_risk    = available_capital * Config.RISK_PER_TRADE_PCT
+
         atr = stock_data.atr
         if atr <= 0:
             setup.skip_reason = "ATR is zero"
@@ -90,16 +91,32 @@ class RiskManager:
             return setup
 
         target = entry + (risk_per_share * Config.MIN_RR_RATIO)
-        shares = int(Config.MAX_RISK_PER_TRADE / risk_per_share)
+        shares = int(max_risk / risk_per_share)
         if shares <= 0:
             setup.skip_reason = "Too few shares after risk calc"
             setup.status = "SKIPPED"
             return setup
 
         capital_needed = shares * entry
-        if capital_needed > Config.MAX_CAPITAL_PER_TRADE:
-            shares = int(Config.MAX_CAPITAL_PER_TRADE / entry)
+        if capital_needed > max_capital:
+            shares = int(max_capital / entry)
             capital_needed = shares * entry
+
+        if capital_needed < Config.MIN_POSITION_VALUE:
+            setup.skip_reason = (
+                f"Position too small: ₹{capital_needed:.0f} < MIN_POSITION_VALUE ₹{Config.MIN_POSITION_VALUE:,} "
+                f"— Dhan fixed charges would eat into profit"
+            )
+            setup.status = "SKIPPED"
+            return setup
+
+        if shares < Config.MIN_QUANTITY:
+            setup.skip_reason = (
+                f"Too few shares: {shares} < MIN_QUANTITY {Config.MIN_QUANTITY} "
+                f"— tier exit system needs at least {Config.MIN_QUANTITY} shares to function"
+            )
+            setup.status = "SKIPPED"
+            return setup
 
         actual_risk = shares * risk_per_share
         rr = (target - entry) / risk_per_share
@@ -120,27 +137,24 @@ class RiskManager:
         return setup
 
     def run_pre_trade_checklist(self, setup: Setup, market_mode: MarketMode,
-                                 vix: float, open_trades: list) -> tuple:
+                                 vix: float, open_trades: list,
+                                 available_capital: float = None) -> tuple:
         """
         10-point checklist before placing any order. ALL must pass.
         Returns (approved: bool, failed: list of failed check names).
 
-        The 10 checks:
-        1. market_mode not DEFENSIVE/CASH
-        2. VIX below the nervous threshold (22)
-        3. No RED event within 1 day for this stock
-        4. Setup score >= 60 (minimum quality threshold)
-        5. Strategy wasn't already skipped by risk calculation
-        6. Score >= 80 (high confidence — this is intentionally strict)
-        7. SL is valid: > 0 and < entry price
-        8. R:R >= 2.0 (min 1:2)
-        9. Capital required <= ₹50k
-        10. Portfolio: under max positions AND total portfolio risk stays under ₹6,000
+        Checks 9 and 10 use limits derived from available_capital so they
+        auto-scale as the account grows or shrinks with realised PnL.
 
         Check 10 is the most important guard against over-leverage:
         portfolio risk = sum of (entry - current_sl) × remaining_qty for all open trades.
-        Adding this trade must not push the total above MAX_PORTFOLIO_RISK.
+        Adding this trade must not push the total above PORTFOLIO_RISK_PCT of capital.
         """
+        if available_capital is None:
+            available_capital = float(Config.TOTAL_CAPITAL)
+        max_capital    = available_capital * Config.CAPITAL_PER_TRADE_PCT
+        portfolio_risk = available_capital * Config.PORTFOLIO_RISK_PCT
+
         checks = {
             "1_market_mode":   market_mode not in [MarketMode.DEFENSIVE, MarketMode.CASH],
             "2_vix":           vix < Config.VIX_NERVOUS,
@@ -153,13 +167,13 @@ class RiskManager:
             "6_candle":        setup.score >= 80,
             "7_sl_valid":      setup.sl_price > 0 and setup.sl_price < setup.entry_price,
             "8_rr":            setup.rr_ratio >= Config.MIN_RR_RATIO,
-            "9_capital":       setup.capital_required <= Config.MAX_CAPITAL_PER_TRADE,
+            "9_capital":       setup.capital_required <= max_capital,
             "10_portfolio":    (
-                len(open_trades) < Config.MAX_SIMULTANEOUS_TRADES and
+                len(open_trades) < Config.effective_max_trades(available_capital) and
                 sum(
                     (t["entry_price"] - t["current_sl"]) * t["remaining_qty"]
                     for t in open_trades if t["status"] == "OPEN"
-                ) + setup.actual_risk <= Config.MAX_PORTFOLIO_RISK
+                ) + setup.actual_risk <= portfolio_risk
             ),
         }
 

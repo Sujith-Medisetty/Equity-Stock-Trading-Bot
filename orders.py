@@ -73,15 +73,46 @@ class OrderManager:
         self._init_dhan()
 
     def _init_dhan(self):
-        if not LIBS_AVAILABLE or dhanhq is None:
+        if not LIBS_AVAILABLE or dhanhq is None or Config.BACKTEST_MODE:
             return
         try:
-            self.dhan = dhanhq(Config.DHAN_CLIENT_ID, Config.DHAN_ACCESS_TOKEN)
+            if Config.PAPER_TRADE:
+                self.dhan = dhanhq(Config.DHAN_SANDBOX_CLIENT_ID, Config.DHAN_SANDBOX_ACCESS_TOKEN)
+                log.info("Dhan initialised in SANDBOX mode")
+            else:
+                self.dhan = dhanhq(Config.DHAN_CLIENT_ID, Config.DHAN_ACCESS_TOKEN)
+                log.info("Dhan initialised in LIVE mode")
         except Exception as e:
             log.error(f"OrderManager Dhan init failed: {e}")
 
     def _get_security_id(self, symbol: str) -> str:
         return self.SECURITY_IDS.get(symbol, "0")
+
+    def get_available_capital(self) -> float:
+        """
+        Returns the cash balance available for new trades.
+        In live/sandbox mode this comes from Dhan's fund-limits API so it
+        reflects your real account after existing positions are deployed.
+        Falls back to Config.TOTAL_CAPITAL in backtest mode or if the API fails.
+        """
+        if Config.BACKTEST_MODE or not self.dhan:
+            return float(Config.TOTAL_CAPITAL)
+        try:
+            resp = self.dhan.get_fund_limits()
+            data = resp.get("data", {}) if isinstance(resp, dict) else {}
+            # Dhan returns the field with a typo in some SDK versions — try both
+            balance = float(
+                data.get("availableBalance") or
+                data.get("availabelBalance") or
+                data.get("net") or 0
+            )
+            if balance <= 0:
+                log.warning("Fund limits returned zero/negative — falling back to Config.TOTAL_CAPITAL")
+                return float(Config.TOTAL_CAPITAL)
+            return balance
+        except Exception as e:
+            log.warning(f"Could not fetch fund limits: {e} — falling back to Config.TOTAL_CAPITAL")
+            return float(Config.TOTAL_CAPITAL)
 
     def place_entry_order(self, setup: Setup) -> Optional[str]:
         """
@@ -96,9 +127,10 @@ class OrderManager:
         the same code block, the window of unprotected exposure is minimal.
         """
         trade_id = f"{setup.symbol}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
 
-        if Config.PAPER_TRADE:
-            log.info(f"[PAPER] BUY {setup.shares}×{setup.symbol} @ ₹{setup.entry_price:.2f} "
+        if Config.BACKTEST_MODE:
+            log.info(f"[BACKTEST] BUY {setup.shares}×{setup.symbol} @ ₹{setup.entry_price:.2f} "
                      f"SL:₹{setup.sl_price:.2f} T:₹{setup.target_price:.2f}")
             self._record_trade(trade_id, setup)
             return trade_id
@@ -131,7 +163,7 @@ class OrderManager:
                 (sl_order.get("data") or {}).get("orderId") or
                 sl_order.get("orderId", "")
             )
-            log.info(f"LIVE orders placed: {setup.symbol} | SL order id: {sl_order_id}")
+            log.info(f"{mode_tag} orders placed: {setup.symbol} | SL order id: {sl_order_id}")
             self._record_trade(trade_id, setup, sl_order_id)
             return trade_id
 
@@ -176,11 +208,13 @@ class OrderManager:
         Returns the new Dhan order ID so it can be saved back to the DB.
         Returns "" in paper mode or if the API call fails.
         """
-        if Config.PAPER_TRADE:
-            log.info(f"[PAPER] SL replaced: {symbol} → ₹{new_sl:.2f} qty {qty}")
+        if Config.BACKTEST_MODE:
+            log.info(f"[BACKTEST] SL replaced: {symbol} → ₹{new_sl:.2f} qty {qty}")
             return ""
         if not self.dhan:
             return ""
+
+        mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
 
         if old_order_id:
             try:
@@ -204,7 +238,7 @@ class OrderManager:
                 (sl_order.get("data") or {}).get("orderId") or
                 sl_order.get("orderId", "")
             )
-            log.info(f"New SL order placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
+            log.info(f"{mode_tag} New SL order placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
             return new_id
         except Exception as e:
             log.error(f"Failed to place replacement SL for {symbol}: {e}")
@@ -219,11 +253,13 @@ class OrderManager:
         reason is logged for the audit trail (SL_HIT, MARKET_CRASH, TIME_BASED, etc.).
         Returns True on success (or in paper mode), False on API failure.
         """
-        if Config.PAPER_TRADE:
-            log.info(f"[PAPER] SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
+        if Config.BACKTEST_MODE:
+            log.info(f"[BACKTEST] SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
             return True
         if not self.dhan:
             return False
+        mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
+        log.info(f"{mode_tag} SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
         try:
             self.dhan.place_order(
                 security_id=self._get_security_id(symbol),
