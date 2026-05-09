@@ -54,17 +54,24 @@ class RiskManager:
         Fills in sl_price, target_price, shares, capital_required, actual_risk, rr_ratio.
         Sets setup.status = "SKIPPED" with a reason if the math doesn't work out.
 
-        Limits are derived from available_capital so they auto-scale with the account:
+        Limits are derived from available_capital (trading capital after reserve):
           max capital per trade = available_capital × CAPITAL_PER_TRADE_PCT (25%)
-          max risk per trade    = available_capital × RISK_PER_TRADE_PCT    (0.75%)
+          max risk per trade    = Config.risk_per_trade(available_capital) — fixed tiers:
+                                    > ₹80k  → ₹1,500
+                                    > ₹20k  → ₹1,000
+                                    ≤ ₹20k  → skip (below trading floor)
 
         If shares × entry exceeds the capital cap, shares are reduced to fit.
-        Risk may then be less than the 0.75% target but the trade is still valid.
+        Risk may then be less than the tier target but the trade is still valid.
         """
         if available_capital is None:
             available_capital = float(Config.TOTAL_CAPITAL)
         max_capital = available_capital * Config.CAPITAL_PER_TRADE_PCT
-        max_risk    = available_capital * Config.RISK_PER_TRADE_PCT
+        max_risk    = Config.risk_per_trade(available_capital)
+        if max_risk == 0:
+            setup.skip_reason = f"Trading capital ₹{available_capital:.0f} ≤ floor ₹{Config.MIN_TRADE_CAPITAL:,}"
+            setup.status = "SKIPPED"
+            return setup
 
         atr = stock_data.atr
         if atr <= 0:

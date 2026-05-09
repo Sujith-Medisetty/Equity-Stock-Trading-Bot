@@ -428,3 +428,39 @@ class DatabaseManager:
             (fy_start,)
         )
         return row["total"] or 0.0
+
+    # ---- Maintenance ----
+
+    def cleanup_old_data(self, days: int = 90):
+        """
+        Prunes old rows from the 3 high-volume tables.
+        Called weekly from system._weekly_review().
+
+        What gets pruned vs kept:
+          stock_snapshots  → keep last `days` days (indicators are recalculated fresh daily anyway)
+          setups           → keep last `days` days (older skipped setups have no audit value)
+          trailing_sl_log  → keep last `days` days (old closed-trade SL history not needed)
+
+        What is NEVER pruned:
+          trades           → financial records, needed for full tax history
+          daily_pnl        → needed for drawdown calculation across the account lifetime
+          fii_history      → needed for consecutive-day streak calculation
+          market_snapshots → useful for long-term regime analysis
+          protection_state → runtime state, tiny and always current
+
+        After deletion, VACUUM reclaims the freed pages so the file actually shrinks.
+        """
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        before = self.fetchone("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+
+        self.execute("DELETE FROM stock_snapshots WHERE date < ?", (cutoff,))
+        self.execute("DELETE FROM setups WHERE date < ?", (cutoff,))
+        self.execute("DELETE FROM trailing_sl_log WHERE timestamp < ?", (cutoff + "T00:00:00",))
+
+        self.conn.execute("VACUUM")
+        self.conn.commit()
+
+        after = self.fetchone("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+        freed = ((before["size"] or 0) - (after["size"] or 0)) / 1024
+        log.info(f"DB cleanup done (cutoff: {cutoff}) | freed: {freed:.1f} KB | tables pruned: stock_snapshots, setups, trailing_sl_log")

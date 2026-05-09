@@ -88,16 +88,19 @@ class Config:
 
     # Percentage-based limits — applied against live available capital at runtime.
     CAPITAL_PER_TRADE_PCT   = 0.25     # max 25% of available capital per position
-    RISK_PER_TRADE_PCT      = 0.0075   # max 0.75% of available capital at risk per trade
     PORTFOLIO_RISK_PCT      = 0.03     # max 3% total open risk across all trades
 
     MAX_SIMULTANEOUS_TRADES = 4        # hard ceiling — never more than this regardless of capital
 
-    # Account-level floor: if available capital is below this, stop trading entirely.
-    # At ₹50k the 0.75% risk budget = ₹375 and target profit = ₹750.
-    # The DP charge (₹15.34 flat) is ~2% of that profit — still acceptable.
-    # Below ₹50k the flat fee becomes a meaningful drag and trades stop paying.
-    MIN_TRADE_CAPITAL       = 50000    # ₹50,000 — account floor to start any new trade
+    # No reserve deduction — the MIN_TRADE_CAPITAL floor already prevents trading
+    # when capital is too low, so subtracting a reserve is redundant.
+    CAPITAL_RESERVE         = 0
+
+    # Account-level floor (trading capital after reserve): stop all new trades below this.
+    # At ₹20k trading capital the position size cap (25% × 20k = ₹5k) falls below
+    # MIN_POSITION_VALUE anyway, so trades would be skipped regardless — this is the
+    # explicit system-level gate that prevents even attempting to size a trade.
+    MIN_TRADE_CAPITAL       = 20000    # ₹20,000 trading capital (after reserve) floor
 
     # Position-level floor: even if account capital is healthy, a specific trade
     # can produce a tiny position (e.g. expensive stock, wide ATR → few shares).
@@ -167,6 +170,9 @@ class Config:
     MONDAY_NO_ENTRY_MINS   = 30   # wait 30 mins Monday morning (gap resolution)
     MAX_HOLD_DAYS          = 15   # force exit if trade open > 15 days without profit
     COOLDOWN_AFTER_LOSS_HR = 2    # wait 2 hours after a SL hit before next trade
+    MAX_ENTRY_HOUR         = 13   # no new entries at or after 1:30 PM (holds overnight)
+    MAX_ENTRY_MINUTE       = 30
+    MAX_ENTRY_DRIFT_PCT    = 1.5  # skip entry if live price moved >1.5% from setup price
     EVENT_EXIT_DAYS        = 5    # exit if earnings/results within 5 days
 
     # --- NSE equity delivery charges (2026 rates) ---
@@ -210,6 +216,22 @@ class Config:
     #                        No broker API calls at all. Uses mock/historical OHLCV data.
     #                        SL hits are checked manually against price each cycle.
     BACKTEST_MODE = False
+
+    @staticmethod
+    def risk_per_trade(trading_capital: float) -> float:
+        """
+        Fixed rupee risk per trade based on current trading capital (after reserve).
+        Returns 0 when capital is at or below the floor — caller must skip the trade.
+
+          > ₹80,000  → ₹1,500  (full risk, meaningful profit after tax)
+          > ₹20,000  → ₹1,000  (reduced risk, still clears charges + STCG)
+          ≤ ₹20,000  → ₹0      (below floor — no new trades)
+        """
+        if trading_capital > 80000:
+            return 1500.0
+        elif trading_capital > 20000:
+            return 1000.0
+        return 0.0
 
     @staticmethod
     def effective_max_trades(available_capital: float) -> int:

@@ -8,15 +8,14 @@ Two external sources feed the system:
    - Intraday 60-min OHLCV for 4H timeframe check
    - Used for both paper and live mode — price data is real in both
 
-2. NSE India public API (no auth, cookie-based via requests.Session)
-   - India VIX (fear index) — from /api/allIndices
-   - GIFT Nifty (pre-market global signal) — same endpoint
-   - FII/DII daily net buying — from /api/fiidiiTradeReact
-   - Earnings/results calendar — from /api/event-calendar
+2. NSE India public API (via pnsea — handles Akamai bot protection automatically)
+   - India VIX (fear index) — nse.equity.find_index("INDIA VIX")
+   - GIFT Nifty (pre-market global signal) — /api/allIndices
+   - FII/DII daily net buying — /api/fiidiiTradeReact
+   - Earnings/results calendar — /api/event-calendar
 
-NSE requires a browser-like session: we first hit the main page to get a cookie,
-then make the real API call with that cookie. Without this, NSE blocks the request
-with 403/401. See Config.NSE_HEADERS — they mimic a Chrome browser.
+   pnsea bypasses NSE's Akamai WAF, so this works from cloud servers too.
+   Install: pip install pnsea
 
 Fallback:
 If Dhan is not connected (no credentials, or import failed), _mock_ohlcv() generates
@@ -25,7 +24,6 @@ The mock uses a fixed seed derived from the symbol name, so the same symbol alwa
 produces the same price history — this makes paper trade runs reproducible.
 """
 
-import requests
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -36,6 +34,13 @@ try:
     from dhanhq import dhanhq
 except ImportError:
     dhanhq = None
+
+try:
+    from pnsea import NSE as PnseaNSE
+    PNSEA_AVAILABLE = True
+except ImportError:
+    PNSEA_AVAILABLE = False
+    log.warning("pnsea not installed — NSE data (VIX, FII, events) will be unavailable. pip install pnsea")
 
 try:
     import pandas as pd
@@ -61,8 +66,7 @@ class DataCollector:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.dhan = None
-        self._nse_session = requests.Session()
-        self._nse_session.headers.update(Config.NSE_HEADERS)
+        self._nse = PnseaNSE() if PNSEA_AVAILABLE else None
         self._init_dhan()
 
     def _init_dhan(self):
@@ -77,20 +81,23 @@ class DataCollector:
         except Exception as e:
             log.error(f"Dhan API connection failed: {e}")
 
-    def _nse_get(self, endpoint: str) -> Optional[dict]:
+    def _nse_get(self, url: str) -> Optional[dict]:
         """
-        Two-step NSE request: first hit the homepage to get a session cookie,
-        then call the actual JSON endpoint. NSE requires a Referer header and
-        a valid session cookie or it returns empty/blocked responses.
-        Returns parsed JSON dict, or None on any failure.
+        Fetches a NSE JSON endpoint using pnsea, which handles Akamai bot
+        protection automatically — works from cloud servers unlike raw requests.
+        Accepts a full URL or a path (prefixed with NSE_BASE if no scheme).
+        Returns parsed JSON, or None on any failure.
         """
+        if not self._nse:
+            log.warning("pnsea not available — skipping NSE fetch")
+            return None
+        if not url.startswith("http"):
+            url = Config.NSE_BASE + url
         try:
-            self._nse_session.get(Config.NSE_BASE, timeout=10)
-            resp = self._nse_session.get(Config.NSE_BASE + endpoint, timeout=15)
-            resp.raise_for_status()
+            resp = self._nse.endpoint_tester(url)
             return resp.json()
         except Exception as e:
-            log.error(f"NSE API error {endpoint}: {e}")
+            log.error(f"NSE API error {url}: {e}")
             return None
 
     # ---- OHLCV ----
@@ -180,21 +187,24 @@ class DataCollector:
         """
         Fetches today's FII and DII net cash buying/selling from NSE.
         Returns {"fii_net_cash": float, "dii_net_cash": float, "date": str}.
-        netVal = FII net (positive = buying, negative = selling).
-        This single day's number is stored in fii_history.
-        get_fii_consecutive_days() then counts how many consecutive days
-        the same direction has persisted to determine FIIFlow.BUYING/SELLING.
+        Response is a list of 2 dicts — one per category (FII/FPI and DII).
+        netValue is positive = buying, negative = selling.
         """
-        data   = self._nse_get(Config.NSE_FII_DII)
+        data   = self._nse_get(Config.NSE_BASE + Config.NSE_FII_DII)
         result = {"fii_net_cash": 0.0, "dii_net_cash": 0.0, "date": ""}
-        if data:
-            try:
-                latest = data[0] if isinstance(data, list) else data
-                result["fii_net_cash"] = float(str(latest.get("netVal", 0)).replace(",", ""))
-                result["dii_net_cash"] = float(str(latest.get("diiNetVal", 0)).replace(",", ""))
-                result["date"] = latest.get("date", "")
-            except Exception as e:
-                log.error(f"FII/DII parse error: {e}")
+        if not data or not isinstance(data, list):
+            return result
+        try:
+            for entry in data:
+                cat = entry.get("category", "")
+                val = float(str(entry.get("netValue", 0)).replace(",", ""))
+                if "FII" in cat:
+                    result["fii_net_cash"] = val
+                    result["date"] = entry.get("date", "")
+                elif "DII" in cat:
+                    result["dii_net_cash"] = val
+        except Exception as e:
+            log.error(f"FII/DII parse error: {e}")
         return result
 
     def get_fii_consecutive_days(self) -> tuple:
@@ -229,30 +239,31 @@ class DataCollector:
 
     def fetch_india_vix(self) -> float:
         """
-        Fetches India VIX from the NSE allIndices endpoint.
+        Fetches India VIX using pnsea's native index lookup.
         VIX >= 28 → CASH mode (no trades). VIX >= 22 → DEFENSIVE mode.
-        Defaults to 15.0 (calm market) if the fetch fails — this is intentionally
-        conservative: a failed VIX fetch shouldn't accidentally block all trading.
+        Defaults to 15.0 (calm market) if the fetch fails — intentionally
+        conservative so a failed fetch doesn't accidentally block all trading.
         """
-        data = self._nse_get(Config.NSE_VIX)
-        if data and "data" in data:
-            for item in data["data"]:
-                if "INDIA VIX" in str(item.get("index", "")):
-                    try:
-                        return float(item.get("last", 15.0))
-                    except Exception:
-                        pass
+        if not self._nse:
+            log.warning("VIX fetch unavailable (pnsea missing), using 15.0")
+            return 15.0
+        try:
+            data = self._nse.equity.find_index("INDIA VIX")
+            if data:
+                raw = data.get("last") or data.get("lastPrice") or data.get("last_price")
+                if raw:
+                    return float(str(raw).replace(",", ""))
+        except Exception as e:
+            log.error(f"VIX fetch error: {e}")
         log.warning("VIX fetch failed, using 15.0")
         return 15.0
 
     def fetch_gift_nifty(self) -> float:
         """
-        GIFT Nifty is the Singapore-listed Nifty futures contract that trades
-        overnight. Its level vs yesterday's Nifty close gives a pre-market
-        read on how the Indian market will likely open. Stored in market_snapshots
-        for reference in the morning briefing but not used in trading logic.
+        GIFT Nifty pre-market signal. Fetched via the allIndices endpoint.
+        Not used in trading logic — stored in market_snapshots for the morning briefing.
         """
-        data = self._nse_get(Config.NSE_VIX)
+        data = self._nse_get(Config.NSE_BASE + Config.NSE_VIX)
         if data and "data" in data:
             for item in data["data"]:
                 if "GIFT" in str(item.get("index", "")).upper():
@@ -277,7 +288,7 @@ class DataCollector:
         """
         today  = datetime.now().strftime("%d-%m-%Y")
         future = (datetime.now() + timedelta(days=30)).strftime("%d-%m-%Y")
-        data   = self._nse_get(f"{Config.NSE_EVENTS}?index=equities&from_date={today}&to_date={future}")
+        data   = self._nse_get(f"{Config.NSE_BASE}{Config.NSE_EVENTS}?index=equities&from_date={today}&to_date={future}")
         events = []
         if data:
             items = data if isinstance(data, list) else data.get("data", [])

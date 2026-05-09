@@ -257,6 +257,31 @@ class TradingSystem:
             if setup.score < 60:
                 continue
 
+            # Validate live price — setup.entry_price is yesterday's close.
+            # By now the market is open and price has moved. Re-check it's still
+            # within 1.5% of where we wanted to enter, then update the setup.
+            live = self._get_live_price(setup.symbol)
+            if live > 0:
+                drift = abs(live - setup.entry_price) / setup.entry_price * 100
+                if drift > Config.MAX_ENTRY_DRIFT_PCT:
+                    log.info(
+                        f"SKIP {setup.symbol}: live ₹{live:.2f} drifted "
+                        f"{drift:.1f}% from setup ₹{setup.entry_price:.2f}"
+                    )
+                    setup.status = "SKIPPED"
+                    setup.skip_reason = f"Price drifted {drift:.1f}% from setup entry"
+                    continue
+                # Update to live price and recalculate SL / target / shares
+                setup.entry_price = round(live, 2)
+                data = self.stocks_data.get(setup.symbol)
+                if data:
+                    setup = self.risk_mgr.calculate_setup_risk(
+                        setup, data, self.available_capital
+                    )
+                    if setup.status == "SKIPPED":
+                        log.info(f"SKIP {setup.symbol} after live-price recalc: {setup.skip_reason}")
+                        continue
+
             approved, failed = self.risk_mgr.run_pre_trade_checklist(
                 setup, self.market_mode, self.vix, open_trades, self.available_capital
             )
@@ -273,6 +298,73 @@ class TradingSystem:
                 log.error(f"Order failed: {setup.symbol}")
 
         self.todays_setups = setups
+
+    # =========================================================================
+    # MIDDAY SCAN — re-runs setup search at 11:30 AM and 1:30 PM
+    # Uses daily indicators already calculated at 8:45 AM (stored in stocks_data)
+    # but replaces each stock's 'close' with the current live price.
+    # This catches setups that didn't exist at open — e.g. a stock that pulls
+    # back to EMA20 at 11 AM, forming a valid PULLBACK entry missed at 9:10 AM.
+    # =========================================================================
+
+    def run_midday_scan(self):
+        if not self.stocks_data:
+            log.warning("Midday scan: no stock data — morning scan must run first")
+            return
+        allowed, reason = self.protection.is_trading_allowed()
+        if not allowed:
+            log.info(f"Midday scan skipped: {reason}")
+            return
+
+        log.info("MIDDAY SCAN: re-running with live prices...")
+        live_prices = self._get_all_live_prices()
+        if not live_prices:
+            log.warning("Midday scan: could not fetch live prices — skipping")
+            return
+
+        import copy
+        refreshed = {}
+        for symbol, data in self.stocks_data.items():
+            live = live_prices.get(symbol, 0)
+            if live > 0:
+                updated              = copy.copy(data)
+                updated.close        = live
+                updated.daily_bullish = (live > data.ema_20 and data.ema_20 > data.ema_50)
+                refreshed[symbol]    = updated
+            else:
+                refreshed[symbol] = data
+
+        original          = self.stocks_data
+        self.stocks_data  = refreshed
+        screened          = self.step3_screen_stocks()
+        setups            = self.step4_find_setups(screened)
+        self.step5_execute_trades(setups)
+        self.stocks_data  = original
+        log.info("MIDDAY SCAN complete")
+
+    def _get_live_price(self, symbol: str) -> float:
+        """Fetches current live price for one symbol from Dhan market feed."""
+        if not self.order_mgr.dhan:
+            return 0.0
+        try:
+            quote = self.order_mgr.dhan.get_market_feed_quote(
+                security_id=self.order_mgr._get_security_id(symbol),
+                exchange_segment="NSE_EQ"
+            )
+            if quote and "data" in quote:
+                return float(quote["data"].get("ltp", 0))
+        except Exception as e:
+            log.warning(f"Live price fetch failed for {symbol}: {e}")
+        return 0.0
+
+    def _get_all_live_prices(self) -> dict:
+        """Fetches current live prices for all 15 watchlist stocks."""
+        prices = {}
+        for symbol in Watchlist.get_symbols():
+            p = self._get_live_price(symbol)
+            if p > 0:
+                prices[symbol] = p
+        return prices
 
     # =========================================================================
     # STEP 6: Intraday monitoring (every 15 mins from 9:30 AM to 3:30 PM)
@@ -386,6 +478,8 @@ class TradingSystem:
                 )
             )
             getattr(schedule.every(), day).at("09:15").do(self.step8_morning_briefing)
+            getattr(schedule.every(), day).at("11:30").do(self.run_midday_scan)
+            getattr(schedule.every(), day).at("13:30").do(self.run_midday_scan)
             getattr(schedule.every(), day).at("15:35").do(self.step7_end_of_day)
 
         schedule.every(15).minutes.do(self._conditional_monitor)
@@ -416,6 +510,7 @@ class TradingSystem:
             print(f"  Trades   : {m['total_trades']}  WR: {m['win_rate']}%  Net: ₹{m['net_pnl']:,.2f}")
         print(f"  STCG Tax : ₹{tx['total_tax']:,.2f}")
         print("=" * 60 + "\n")
+        self.db.cleanup_old_data(days=90)
 
     def run_once_test(self):
         print("\n" + "=" * 60)

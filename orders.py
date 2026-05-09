@@ -96,7 +96,7 @@ class OrderManager:
         Falls back to Config.TOTAL_CAPITAL in backtest mode or if the API fails.
         """
         if Config.BACKTEST_MODE or not self.dhan:
-            return float(Config.TOTAL_CAPITAL)
+            return max(0.0, float(Config.TOTAL_CAPITAL) - Config.CAPITAL_RESERVE)
         try:
             resp = self.dhan.get_fund_limits()
             data = resp.get("data", {}) if isinstance(resp, dict) else {}
@@ -108,11 +108,11 @@ class OrderManager:
             )
             if balance <= 0:
                 log.warning("Fund limits returned zero/negative — falling back to Config.TOTAL_CAPITAL")
-                return float(Config.TOTAL_CAPITAL)
-            return balance
+                return max(0.0, float(Config.TOTAL_CAPITAL) - Config.CAPITAL_RESERVE)
+            return max(0.0, balance - Config.CAPITAL_RESERVE)
         except Exception as e:
             log.warning(f"Could not fetch fund limits: {e} — falling back to Config.TOTAL_CAPITAL")
-            return float(Config.TOTAL_CAPITAL)
+            return max(0.0, float(Config.TOTAL_CAPITAL) - Config.CAPITAL_RESERVE)
 
     def place_entry_order(self, setup: Setup) -> Optional[str]:
         """

@@ -107,6 +107,11 @@ class ProtectionEngine:
         if now.weekday() == 4 and now.hour >= Config.FRIDAY_NO_ENTRY_HOUR:
             return False, "No new entries after 2 PM Friday"
 
+        cutoff = now.replace(hour=Config.MAX_ENTRY_HOUR,
+                             minute=Config.MAX_ENTRY_MINUTE, second=0, microsecond=0)
+        if now >= cutoff:
+            return False, f"No new entries after {Config.MAX_ENTRY_HOUR}:{Config.MAX_ENTRY_MINUTE:02d} PM"
+
         market_open = now.replace(hour=9, minute=15 + Config.MARKET_OPEN_WAIT_MINS, second=0)
         if now < market_open:
             return False, "Waiting for market to settle"
