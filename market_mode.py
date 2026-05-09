@@ -51,50 +51,81 @@ class MarketModeEngine:
         FII flow can modify the final mode up or down.
         """
 
-        # VIX override — market fear level takes priority over everything
+        # --- VIX override — market fear level takes priority over everything ---
+
+        # VIX >= 28: full panic. Options are pricing in 2%+ daily moves.
+        # SLs get blown through by gaps. Exit all positions, take no new trades.
         if vix >= Config.VIX_PANIC:
             return MarketMode.CASH, FIIFlow.NEUTRAL
-        if vix >= Config.VIX_NERVOUS:
-            return MarketMode.DEFENSIVE, FIIFlow.SELLING
 
-        # FII flow: need sustained activity (3+ days) above threshold to count
+        # VIX >= 22: nervous market. Existing positions may be at risk.
+        # No new entries — protect what we have, let positions exit naturally or via SL.
+        if vix >= Config.VIX_NERVOUS:
+            return MarketMode.DEFENSIVE, FIIFlow.SELLING  # SELLING because fear usually accompanies selling
+
+        # --- FII flow determination (independent of Nifty trend) ---
+
+        # FII buying: net > ₹2000 Cr AND sustained for 3+ consecutive days.
+        # A single day of buying could be noise. Three consecutive days confirms a trend.
         if (fii_net > Config.FII_FLOW_THRESHOLD_CR and
                 fii_consecutive_buy >= Config.FII_CONSECUTIVE_DAYS):
             fii_flow = FIIFlow.BUYING
+
+        # FII selling: net < -₹2000 Cr AND sustained for 3+ consecutive days.
         elif (fii_net < -Config.FII_FLOW_THRESHOLD_CR and
               fii_consecutive_sell >= Config.FII_CONSECUTIVE_DAYS):
             fii_flow = FIIFlow.SELLING
-        else:
-            fii_flow = FIIFlow.NEUTRAL
 
+        else:
+            fii_flow = FIIFlow.NEUTRAL  # no clear sustained direction
+
+        # If Nifty data wasn't available (e.g. data fetch failed), default to CAUTIOUS.
+        # This is conservative — we'd rather miss opportunities than trade without market context.
         if nifty_data is None:
             return MarketMode.CAUTIOUS, fii_flow
 
-        above_ema20  = nifty_data.close > nifty_data.ema_20
-        above_ema50  = nifty_data.close > nifty_data.ema_50
-        above_ema200 = nifty_data.close > nifty_data.ema_200
-        rsi          = nifty_data.rsi
+        # --- Nifty EMA alignment + RSI → base market mode ---
 
-        # Strong bull: all 3 EMAs aligned (short > mid > long) + RSI above 50
+        # Precompute these booleans for readability in the conditions below
+        above_ema20  = nifty_data.close > nifty_data.ema_20    # short-term trend bullish
+        above_ema50  = nifty_data.close > nifty_data.ema_50    # medium-term trend bullish
+        above_ema200 = nifty_data.close > nifty_data.ema_200   # long-term trend bullish
+        rsi          = nifty_data.rsi                           # Nifty's RSI (above 50 = bullish momentum)
+
+        # Strong bull: all 3 EMAs stacked (close > 20 > 50 > 200 implied) AND RSI above 50 (momentum positive)
+        # This is the "everything aligned" condition.
         if above_ema20 and above_ema50 and above_ema200 and rsi > 50:
             if fii_flow == FIIFlow.BUYING:
-                mode = MarketMode.AGGRESSIVE   # everything aligned → full aggression
+                # Best possible condition: trend + momentum + institutions buying
+                # → full aggression, all 4 strategies active, all 4 positions allowed
+                mode = MarketMode.AGGRESSIVE
             elif fii_flow == FIIFlow.SELLING:
-                mode = MarketMode.SELECTIVE    # trend up but institutions selling → careful
+                # Trend looks fine but institutions are selling into strength — be careful.
+                # Could be distribution (smart money exiting into retail buying).
+                # Only take highest-score setups.
+                mode = MarketMode.SELECTIVE
             else:
+                # Trend intact, FII neutral — normal trading conditions
                 mode = MarketMode.NORMAL
 
-        # Temporary pullback in bull (above 50 and 200 EMA, dipped below 20 EMA)
+        # Temporary pullback in an ongoing bull market:
+        # Nifty is above the 50-day and 200-day EMA but dipped below the 20-day EMA.
+        # This is a normal healthy correction in an uptrend — don't go full defensive.
+        # But be selective: only the best setups, since trend is slightly weakened.
         elif above_ema50 and above_ema200 and not above_ema20:
-            mode = MarketMode.SELECTIVE        # only highest-score setups
+            mode = MarketMode.SELECTIVE  # only highest-score setups pass the strategy filter
 
-        # Sideways: above 200 EMA but not 50 (medium-term trend mixed)
+        # Sideways / mixed: Nifty is above 200-day (long-term trend still up) but not the 50-day.
+        # Also requires RSI > 40 to confirm it's not in a full breakdown.
+        # This is a choppy, uncertain market — limit to 1-2 positions, very selective.
         elif above_ema200 and rsi > 40:
-            mode = MarketMode.CAUTIOUS         # 1-2 positions max, very selective
+            mode = MarketMode.CAUTIOUS   # 1-2 positions max
 
-        # Bear: below 200 EMA or RSI < 40 — trend clearly down
+        # Bear market / breakdown: Nifty below 200-day EMA, or RSI < 40 (momentum broken).
+        # In a bear market, all swing trades are fighting the primary downtrend.
+        # The few setups that form usually fail or reverse quickly.
         else:
-            mode = MarketMode.DEFENSIVE        # no new entries
+            mode = MarketMode.DEFENSIVE  # no new entries allowed
 
         log.info(f"Market Mode: {mode.value} | FII: {fii_flow.value} | VIX: {vix:.1f}")
         return mode, fii_flow

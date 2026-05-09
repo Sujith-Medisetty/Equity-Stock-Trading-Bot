@@ -70,53 +70,91 @@ class ProtectionEngine:
         Returns (True, "OK") only when every check passes.
         Returns (False, reason_string) on the first failure found.
         """
+
+        # --- Check 1: Manual halt ---
+        # An operator can set trading_halted="1" in the DB (e.g. via a script or directly)
+        # to stop all trading immediately — e.g. during a breaking news event or system issue.
         if self.db.get_state("trading_halted") == "1":
             return False, "Trading manually halted"
 
+        # --- Check 2: Daily loss limit ---
+        # Reads sum of net_pnl for all trades closed today from the DB.
+        # If we've lost ₹3,000+ today, stop trading for the rest of the day.
+        # Resets at midnight (new day = new daily_pnl calculation).
         daily = self.db.get_today_realised_pnl()
         if daily <= -Config.DAILY_LOSS_LIMIT:
             return False, f"Daily loss limit hit: ₹{abs(daily):.0f}"
 
+        # --- Check 3: Weekly loss limit ---
+        # Reads sum of net_pnl for all trades closed since Monday of this week.
+        # If we've lost ₹6,000+ this week, stop for the rest of the week.
         weekly = self.db.get_week_realised_pnl()
         if weekly <= -Config.WEEKLY_LOSS_LIMIT:
             return False, f"Weekly loss limit hit: ₹{abs(weekly):.0f}"
 
+        # --- Check 4: Monthly loss limit ---
+        # If we've lost ₹10,000+ this calendar month, stop for the month.
         monthly = self.db.get_month_realised_pnl()
         if monthly <= -Config.MONTHLY_LOSS_LIMIT:
             return False, f"Monthly loss limit hit: ₹{abs(monthly):.0f}"
 
+        # --- Check 5: Maximum drawdown ---
+        # If monthly loss hits ₹20,000, this is a hard stop — the system needs
+        # a manual review before trading can resume (operator must clear trading_halted flag).
+        # Note: using monthly PnL as proxy for drawdown — close enough for ₹2L account.
         if monthly <= -Config.MAX_DRAWDOWN:
             return False, f"Max drawdown hit: ₹{abs(monthly):.0f}"
 
+        # --- Check 6: Loss cooldown ---
+        # After any SL hit, a 2-hour cooldown is started (stored in DB as ISO timestamp).
+        # During this window, no new trades are allowed — prevents emotional revenge trading.
         cooldown_until = self.db.get_state("cooldown_until")
         if cooldown_until:
             try:
-                cd = datetime.fromisoformat(cooldown_until)
+                cd = datetime.fromisoformat(cooldown_until)   # parse the stored ISO timestamp
                 if datetime.now() < cd:
+                    # Cooldown still active — calculate remaining minutes for the log message
                     mins = int((cd - datetime.now()).total_seconds() / 60)
                     return False, f"Cooldown active: {mins} mins remaining"
             except Exception:
-                pass
+                pass  # malformed timestamp in DB — ignore and continue
 
         now = datetime.now()
-        if now.weekday() == 0:
+
+        # --- Check 7: Monday 30-minute wait ---
+        # Monday mornings have larger gaps due to weekend news.
+        # Wait 30 minutes after 9:15 AM open for gap resolution.
+        if now.weekday() == 0:   # 0 = Monday
             market_open = now.replace(hour=9, minute=15, second=0)
             if now < market_open + timedelta(minutes=Config.MONDAY_NO_ENTRY_MINS):
                 return False, "Monday 30-min wait period"
 
-        if now.weekday() == 4 and now.hour >= Config.FRIDAY_NO_ENTRY_HOUR:
+        # --- Check 8: Friday 2 PM cutoff ---
+        # No new entries after 2 PM on Friday.
+        # Reason: new positions would be held through the weekend (Sat+Sun) when
+        # we can't monitor or exit. Weekend news could gap the stock against us.
+        if now.weekday() == 4 and now.hour >= Config.FRIDAY_NO_ENTRY_HOUR:  # 4 = Friday
             return False, "No new entries after 2 PM Friday"
 
+        # --- Check 9: Daily entry cutoff (1:30 PM) ---
+        # No new entries at or after 1:30 PM on any day.
+        # Reason: any position taken this late must be held overnight (market closes at 3:30 PM
+        # and we need time to place and confirm orders). Holding overnight without monitoring
+        # opportunity is too risky for swing-sized positions.
         cutoff = now.replace(hour=Config.MAX_ENTRY_HOUR,
                              minute=Config.MAX_ENTRY_MINUTE, second=0, microsecond=0)
         if now >= cutoff:
             return False, f"No new entries after {Config.MAX_ENTRY_HOUR}:{Config.MAX_ENTRY_MINUTE:02d} PM"
 
+        # --- Check 10: Market open wait (15 minutes after 9:15 AM) ---
+        # The first 15 minutes after open are chaotic: opening auction fills, gap resolution,
+        # institutions filling large overnight orders. Prices are erratic and setups unreliable.
+        # We wait for the order book to stabilise before entering.
         market_open = now.replace(hour=9, minute=15 + Config.MARKET_OPEN_WAIT_MINS, second=0)
         if now < market_open:
             return False, "Waiting for market to settle"
 
-        return True, "OK"
+        return True, "OK"  # all checks passed — trading is allowed
 
     def start_loss_cooldown(self):
         """
@@ -124,6 +162,8 @@ class ProtectionEngine:
         during the cooldown period still enforces the remaining wait time.
         Also called by sync_with_broker() when broker-executed SL exits are detected.
         """
+        # Store the "don't trade until this time" timestamp in the DB.
+        # is_trading_allowed() reads this every time before placing a trade.
         until = (datetime.now() + timedelta(hours=Config.COOLDOWN_AFTER_LOSS_HR)).isoformat()
         self.db.set_state("cooldown_until", until)
         log.warning(f"Loss cooldown started — no trades for {Config.COOLDOWN_AFTER_LOSS_HR}h")
@@ -135,11 +175,14 @@ class ProtectionEngine:
         a review reminder — it means either the system parameters need adjustment
         or market conditions have changed.
         """
+        # Fetch the 5 most recently closed trades (only 3 needed, but 5 gives context)
         rows = self.db.fetchall(
             "SELECT net_pnl FROM trades WHERE status='CLOSED' ORDER BY exit_date DESC LIMIT 5"
         )
         if len(rows) < 3:
-            return False
+            return False  # not enough history to determine a streak
+
+        # Check only the 3 most recent — all must be negative for the warning to trigger
         last_three = [r["net_pnl"] for r in rows[:3]]
         return all(p < 0 for p in last_three)
 
@@ -152,15 +195,25 @@ class ProtectionEngine:
         - far away: (True, "Event far away, safe to hold")
         Called every 15 mins by TradeMonitor for each open position.
         """
+        # Find the nearest upcoming event for this symbol (by days_away ascending)
         event = self.db.fetchone(
             "SELECT * FROM events_calendar WHERE symbol=? ORDER BY days_away ASC LIMIT 1",
             (symbol,)
         )
         if not event:
-            return True, "No upcoming events"
+            return True, "No upcoming events"  # nothing in the calendar — safe to hold
+
         days = event["days_away"]
+
         if days <= Config.EVENT_EXIT_DAYS:
+            # Event is imminent (within 5 days) — exit the trade NOW.
+            # Earnings/results can gap ±10% overnight. Our SL cannot protect against overnight gaps.
             return False, f"Exit! {event['event_type']} in {days} days"
+
         if days <= 10:
+            # Event is coming soon but not imminent — keep the trade but monitor closely.
+            # If the stock starts weakening, that's an early warning and a good time to exit.
             return True, f"Warning: {event['event_type']} in {days} days"
+
+        # Event is far enough away to not be a concern for a swing trade (5-15 day hold)
         return True, "Event far away, safe to hold"

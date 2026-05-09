@@ -58,29 +58,44 @@ class StockScreener:
           Screener reasons are logged at DEBUG level so you can see why each was skipped.
         """
         passed       = []
-        open_symbols = {t["symbol"] for t in open_trades}
-        open_sectors = {Watchlist.get_sector(t["symbol"]) for t in open_trades}
+
+        # Build lookup sets for faster checks: O(1) instead of O(n) for each stock
+        open_symbols = {t["symbol"] for t in open_trades}    # symbols we already hold
+        open_sectors = {Watchlist.get_sector(t["symbol"]) for t in open_trades}  # sectors already in portfolio
 
         for symbol, data in stocks_data.items():
             if data is None:
-                continue
+                continue  # IndicatorEngine returned None for this stock — skip
 
-            reasons = []
+            reasons = []  # collect all reasons to skip — logged together at the end
 
-            # ATR filter: reject if volatility is 50%+ above average.
-            # Exception: if volume is 2x+ (potential breakout day), raise threshold to 2.5
-            # because breakout days naturally have elevated ATR from the range expansion.
+            # --- Filter 1: ATR ratio ---
+            # atr_ratio = today's ATR / 20-day average ATR.
+            # > 1.5 means today is 50% more volatile than usual — news event or panic.
+            # Exception: if volume is already 2x+ (potential breakout), raise limit to 2.5
+            # because a real breakout day naturally has wider range than consolidation days.
             atr_limit = 2.5 if data.volume_ratio >= 2.0 else 1.5
             if data.atr_ratio > atr_limit:
                 reasons.append(f"ATR ratio too high ({data.atr_ratio:.2f}, limit {atr_limit})")
 
+            # --- Filter 2: Already holding this stock ---
+            # We never add to an existing position — one trade per stock at a time.
+            # Adding to a losing position is averaging down (bad risk management).
+            # Adding to a winning position without a fresh setup is chasing.
             if symbol in open_symbols:
                 reasons.append("Already in portfolio")
 
+            # --- Filter 3: Sector already open ---
+            # Max 1 open trade per sector. Prevents sector concentration risk:
+            # e.g. if banks are hit by bad news, holding ICICIBANK + HDFCBANK = 2x the loss.
             sector = Watchlist.get_sector(symbol)
             if sector in open_sectors:
                 reasons.append(f"Sector {sector} already open")
 
+            # --- Filter 4: Upcoming RED event (earnings/results within 5 days) ---
+            # Query events_calendar for this specific stock.
+            # days_away <= 5 and risk_level='RED' = imminent event with high gap risk.
+            # We never enter INTO an earnings event — the gap can be ±10% and SLs don't protect against overnight gaps.
             event = self.db.fetchone(
                 "SELECT * FROM events_calendar WHERE symbol=? AND days_away<=5 AND risk_level='RED'",
                 (symbol,)
@@ -88,16 +103,25 @@ class StockScreener:
             if event:
                 reasons.append(f"Event in {event['days_away']} days: {event['event_type']}")
 
+            # --- Filter 5: Very low volume ---
+            # volume_ratio = today's volume / 20-day average volume.
+            # < 0.5 means trading at less than half the normal volume.
+            # When institutions are absent, setups on thin days often fail or reverse immediately.
             if data.volume_ratio < 0.5:
                 reasons.append(f"Low volume ({data.volume_ratio:.2f}x avg)")
 
+            # --- Filter 6: Market mode gate ---
+            # DEFENSIVE: Nifty below EMA200 — all upside setups are fighting the primary trend.
+            # CASH: VIX >= 28 — market in full panic, no entries under any circumstances.
             if market_mode in [MarketMode.DEFENSIVE, MarketMode.CASH]:
                 reasons.append("Market in defensive/cash mode")
 
             if reasons:
+                # Log all reasons at DEBUG level — won't clutter normal output
+                # but available if you run with --debug to understand why stocks were skipped
                 log.debug(f"SKIP {symbol}: {' | '.join(reasons)}")
             else:
-                passed.append(symbol)
+                passed.append(symbol)  # cleared all filters — send to strategy engine
 
         log.info(f"Screening: {len(passed)}/{len(stocks_data)} passed")
         return passed
