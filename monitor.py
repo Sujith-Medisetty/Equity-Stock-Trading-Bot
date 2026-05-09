@@ -300,10 +300,38 @@ class TradeMonitor:
             if new_id:
                 self.db.update_sl_order_id(trade_id, new_id)
 
+        # Tier 1.5: adaptive trail between breakeven and target (lock 50% of move above entry)
+        elif trade["tier1_done"] and not trade["tier2_done"] and price < target:
+            adaptive_sl = entry + (price - entry) * 0.5
+            if adaptive_sl > sl:
+                log.info(f"ADAPTIVE TRAIL: {trade['symbol']} SL {sl:.2f} → {adaptive_sl:.2f} "
+                         f"(price ₹{price:.2f}, protecting 50% of ₹{price - entry:.2f} gain)")
+                self.db.update_trade_sl(trade_id, adaptive_sl)
+                self.db.log_trailing_sl(trade_id, sl, adaptive_sl, price, "ADAPTIVE_TRAIL")
+                new_id = self.order_mgr.replace_sl_order(trade["symbol"], qty, adaptive_sl, trade["sl_order_id"])
+                if new_id:
+                    self.db.update_sl_order_id(trade_id, new_id)
+
         # Tier 2: sell 50% and tighten SL at 2:1
         elif not trade["tier2_done"] and trade["tier1_done"] and price >= target:
             exit_qty  = max(1, qty // 2)
             remaining = qty - exit_qty
+            # Check if partial exit is profitable after charges (DP charge eats small sells)
+            partial_pnl = ChargesCalculator.calculate_trade_pnl(entry, price, exit_qty)
+            if partial_pnl["net_pnl"] <= 0:
+                log.info(f"TIER 2 SKIP: {trade['symbol']} partial sell of {exit_qty} shares "
+                         f"not profitable after charges (net ₹{partial_pnl['net_pnl']:.2f}). "
+                         f"Trailing full qty instead.")
+                new_trail_sl = price - atr
+                if new_trail_sl > sl:
+                    self.db.update_trade_sl(trade_id, new_trail_sl)
+                    self.db.log_trailing_sl(trade_id, sl, new_trail_sl, price, "TIER2_SKIP_TRAIL")
+                    new_id = self.order_mgr.replace_sl_order(trade["symbol"], qty, new_trail_sl, trade["sl_order_id"])
+                    if new_id:
+                        self.db.update_sl_order_id(trade_id, new_id)
+                self.db.execute("UPDATE trades SET tier2_done=1, tier2_price=?, tier2_qty=0, remaining_qty=? WHERE trade_id=?",
+                                (price, qty, trade_id))
+                return
             log.info(f"TIER 2 PARTIAL EXIT: {trade['symbol']} selling {exit_qty}")
             if self.order_mgr.place_sell_order(trade["symbol"], exit_qty, price, "TIER2_PARTIAL_EXIT"):
                 new_sl = max(sl, target - (atr * 0.5))
