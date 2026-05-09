@@ -1,0 +1,20 @@
+# Python bytecode cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime artifacts
+trading_system.log
+trading.db
+
+# Environment / secrets
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db

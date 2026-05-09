@@ -259,17 +259,22 @@ class TradingSystem:
 
             # Validate live price — setup.entry_price is yesterday's close.
             # By now the market is open and price has moved. Re-check it's still
-            # within 1.5% of where we wanted to enter, then update the setup.
+            # within acceptable drift, then update the setup.
+            # FII_FLOW, BREAKOUT, WEEK52 strategies expect gap-ups, so allow wider drift.
             live = self._get_live_price(setup.symbol)
             if live > 0:
                 drift = abs(live - setup.entry_price) / setup.entry_price * 100
-                if drift > Config.MAX_ENTRY_DRIFT_PCT:
+                strategy_name = setup.strategy.value if setup.strategy else ""
+                max_drift = (Config.MAX_ENTRY_DRIFT_PCT_WIDE
+                             if strategy_name in Config.WIDE_DRIFT_STRATEGIES
+                             else Config.MAX_ENTRY_DRIFT_PCT)
+                if drift > max_drift:
                     log.info(
                         f"SKIP {setup.symbol}: live ₹{live:.2f} drifted "
-                        f"{drift:.1f}% from setup ₹{setup.entry_price:.2f}"
+                        f"{drift:.1f}% from setup ₹{setup.entry_price:.2f} (limit {max_drift}%)"
                     )
                     setup.status = "SKIPPED"
-                    setup.skip_reason = f"Price drifted {drift:.1f}% from setup entry"
+                    setup.skip_reason = f"Price drifted {drift:.1f}% from setup entry (limit {max_drift}%)"
                     continue
                 # Update to live price and recalculate SL / target / shares
                 setup.entry_price = round(live, 2)
@@ -329,6 +334,10 @@ class TradingSystem:
             if live > 0:
                 updated              = copy.copy(data)
                 updated.close        = live
+                # Update high/low to reflect intraday movement so indicators
+                # (candle patterns, consolidation range) use coherent OHLC.
+                updated.high         = max(data.high, live)
+                updated.low          = min(data.low, live)
                 updated.daily_bullish = (live > data.ema_20 and data.ema_20 > data.ema_50)
                 refreshed[symbol]    = updated
             else:

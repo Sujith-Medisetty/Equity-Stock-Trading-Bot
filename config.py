@@ -173,7 +173,19 @@ class Config:
     MAX_ENTRY_HOUR         = 13   # no new entries at or after 1:30 PM (holds overnight)
     MAX_ENTRY_MINUTE       = 30
     MAX_ENTRY_DRIFT_PCT    = 1.5  # skip entry if live price moved >1.5% from setup price
+    # FII_FLOW and BREAKOUT strategies expect gap-ups — allow wider drift for these.
+    MAX_ENTRY_DRIFT_PCT_WIDE = 3.0
+    WIDE_DRIFT_STRATEGIES  = {"FII_FLOW", "BREAKOUT", "WEEK52"}
     EVENT_EXIT_DAYS        = 5    # exit if earnings/results within 5 days
+
+    # --- Slippage simulation (paper mode only) ---
+    # In live trading, fills are slightly worse than LTP due to spread and queue position.
+    # This adds a penalty to paper entries and exits so paper PNL is more realistic.
+    PAPER_SLIPPAGE_PCT     = 0.002  # 0.2% adverse slippage on paper fills
+
+    # --- SL replacement safety ---
+    SL_REPLACE_MAX_RETRIES = 3     # retry SL placement this many times before emergency sell
+    SL_REPLACE_RETRY_DELAY = 2     # seconds between retries
 
     # --- NSE equity delivery charges (2026 rates) ---
     # These are deducted from gross PNL to get net PNL

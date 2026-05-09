@@ -67,8 +67,12 @@ class StockScreener:
 
             reasons = []
 
-            if data.atr_ratio > 1.5:
-                reasons.append(f"ATR ratio too high ({data.atr_ratio:.2f})")
+            # ATR filter: reject if volatility is 50%+ above average.
+            # Exception: if volume is 2x+ (potential breakout day), raise threshold to 2.5
+            # because breakout days naturally have elevated ATR from the range expansion.
+            atr_limit = 2.5 if data.volume_ratio >= 2.0 else 1.5
+            if data.atr_ratio > atr_limit:
+                reasons.append(f"ATR ratio too high ({data.atr_ratio:.2f}, limit {atr_limit})")
 
             if symbol in open_symbols:
                 reasons.append("Already in portfolio")

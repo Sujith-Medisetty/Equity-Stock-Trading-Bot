@@ -117,17 +117,17 @@ class OrderManager:
     def place_entry_order(self, setup: Setup) -> Optional[str]:
         """
         Places a BUY order and immediately places an SL SELL order.
-        In paper mode: skips API calls, records trade directly.
+        In paper mode: skips API calls, records trade directly with simulated slippage.
         In live mode: places both orders via Dhan, stores sl_order_id in DB.
         Returns the trade_id string on success, None on failure.
-
-        Why place the SL order immediately at entry?
-        If the process crashes between placing the buy and placing the SL,
-        we'd be holding a position with no protection. By placing both in
-        the same code block, the window of unprotected exposure is minimal.
         """
         trade_id = f"{setup.symbol}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
+
+        # Apply slippage to paper entries — simulate worse fills than LTP.
+        # Buy fills are higher (adverse), making paper PNL more conservative.
+        if Config.PAPER_TRADE and not Config.BACKTEST_MODE:
+            setup.entry_price = round(setup.entry_price * (1 + Config.PAPER_SLIPPAGE_PCT), 2)
 
         if Config.BACKTEST_MODE:
             log.info(f"[BACKTEST] BUY {setup.shares}×{setup.symbol} @ ₹{setup.entry_price:.2f} "
@@ -200,10 +200,8 @@ class OrderManager:
         Called whenever the trailing SL moves up: tier 1 (breakeven), tier 2 (tighten),
         or tier 3 (1×ATR trail after each new high).
 
-        The old_order_id is the Dhan order ID stored in trades.sl_order_id.
-        If cancel fails (order may have already been executed by the exchange),
-        we log a warning but still attempt to place the new SL — better to have
-        a duplicate SL order risk than to have no SL at all.
+        Retries up to SL_REPLACE_MAX_RETRIES times on failure. If all retries fail,
+        places an emergency market sell to prevent an unprotected position.
 
         Returns the new Dhan order ID so it can be saved back to the DB.
         Returns "" in paper mode or if the API call fails.
@@ -223,34 +221,57 @@ class OrderManager:
             except Exception as e:
                 log.warning(f"Could not cancel SL order {old_order_id}: {e}")
 
+        import time
+        for attempt in range(1, Config.SL_REPLACE_MAX_RETRIES + 1):
+            try:
+                sl_order = self.dhan.place_order(
+                    security_id=self._get_security_id(symbol),
+                    exchange_segment=self.dhan.NSE,
+                    transaction_type=self.dhan.SELL,
+                    quantity=qty,
+                    order_type=self.dhan.SL,
+                    product_type=self.dhan.CNC,
+                    price=new_sl,
+                    trigger_price=new_sl
+                )
+                new_id = str(
+                    (sl_order.get("data") or {}).get("orderId") or
+                    sl_order.get("orderId", "")
+                )
+                log.info(f"{mode_tag} New SL order placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
+                return new_id
+            except Exception as e:
+                log.error(f"SL placement attempt {attempt}/{Config.SL_REPLACE_MAX_RETRIES} "
+                          f"failed for {symbol}: {e}")
+                if attempt < Config.SL_REPLACE_MAX_RETRIES:
+                    time.sleep(Config.SL_REPLACE_RETRY_DELAY)
+
+        log.critical(
+            f"EMERGENCY: All {Config.SL_REPLACE_MAX_RETRIES} SL placement attempts failed for "
+            f"{symbol}. Placing emergency MARKET SELL to protect capital."
+        )
         try:
-            sl_order = self.dhan.place_order(
+            self.dhan.place_order(
                 security_id=self._get_security_id(symbol),
                 exchange_segment=self.dhan.NSE,
                 transaction_type=self.dhan.SELL,
                 quantity=qty,
-                order_type=self.dhan.SL,
+                order_type=self.dhan.MARKET,
                 product_type=self.dhan.CNC,
-                price=new_sl,
-                trigger_price=new_sl
+                price=0
             )
-            new_id = str(
-                (sl_order.get("data") or {}).get("orderId") or
-                sl_order.get("orderId", "")
-            )
-            log.info(f"{mode_tag} New SL order placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
-            return new_id
-        except Exception as e:
-            log.error(f"Failed to place replacement SL for {symbol}: {e}")
-            return ""
+            log.critical(f"EMERGENCY SELL placed for {symbol} × {qty} shares")
+        except Exception as e2:
+            log.critical(f"EMERGENCY SELL ALSO FAILED for {symbol}: {e2} — POSITION UNPROTECTED")
+        return ""
 
     def place_sell_order(self, symbol: str, qty: int,
                           price: float, reason: str) -> bool:
         """
-        Places a LIMIT SELL slightly below market (price × 0.999) for fast execution.
+        Places a LIMIT SELL slightly below market (price × 0.999) for fast fills.
+        In paper mode: applies slippage simulation so paper exits are conservative.
         Used for: tier 2 partial exit, VIX spike exit, time-based exit, event exit.
         NOT for SL exits — in live mode, the exchange-level SL order handles those.
-        reason is logged for the audit trail (SL_HIT, MARKET_CRASH, TIME_BASED, etc.).
         Returns True on success (or in paper mode), False on API failure.
         """
         if Config.BACKTEST_MODE:
@@ -258,6 +279,11 @@ class OrderManager:
             return True
         if not self.dhan:
             return False
+
+        # Sell fills are lower (adverse) in paper mode — simulate real slippage.
+        if Config.PAPER_TRADE:
+            price = round(price * (1 - Config.PAPER_SLIPPAGE_PCT), 2)
+
         mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
         log.info(f"{mode_tag} SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
         try:
