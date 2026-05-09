@@ -5,8 +5,8 @@ TradeMonitor runs every 15 minutes (step6_monitor_trades) from 9:30 AM to 3:30 P
 It does four things on each cycle:
 
 1. Broker sync (sync_with_broker)
-   Compares the DB's open trades against actual Dhan holdings.
-   Any trade that is in the DB as OPEN but no longer in Dhan holdings =
+   Compares the DB's open trades against actual Upstox holdings.
+   Any trade that is in the DB as OPEN but no longer in Upstox holdings =
    the broker already fired the SL order. We mark it CLOSED in the DB with
    reason "BROKER_EXECUTED" and start the loss cooldown.
    This is critical for live mode: without this, the DB would show trades as
@@ -67,77 +67,67 @@ class TradeMonitor:
 
     def sync_with_broker(self):
         """
-        Two-way reconciliation between Dhan holdings and the local DB.
+        Two-way reconciliation between Upstox holdings and the local DB.
 
-        Direction 1 — Dhan → DB (close):
-          DB trade is OPEN but symbol no longer in Dhan holdings.
+        Direction 1 — Upstox → DB (close):
+          DB trade is OPEN but symbol no longer in Upstox holdings.
           Broker already fired the SL order. Mark it CLOSED with "BROKER_EXECUTED".
 
-        Direction 2 — Dhan → DB (import):
-          Dhan has a holding that has no matching OPEN trade in DB.
-          Could be a manual buy in the Dhan app, or a crash before DB write.
+        Direction 2 — Upstox → DB (import):
+          Upstox has a holding that has no matching OPEN trade in DB.
+          Could be a manual buy in the Upstox app, or a crash before DB write.
           Import it as an OPEN trade with conservative defaults so the
           monitor and screener know about it.
 
-        Direction 3 — DB → Dhan (re-place SL):
-          DB trade is OPEN and symbol is in Dhan, but sl_order_id is empty.
+        Direction 3 — DB → Upstox (re-place SL):
+          DB trade is OPEN and symbol is in Upstox, but sl_order_id is empty.
           The SL order was never placed or was lost. Re-place it now so the
           position is protected at the exchange level.
 
         No-op in BACKTEST_MODE (no real broker to talk to).
         """
         # Skip entirely in backtest mode — there's no broker to sync with
-        if Config.BACKTEST_MODE or not self.order_mgr.dhan:
+        if Config.BACKTEST_MODE or not self.order_mgr._client:
             return
 
+        # get_holdings() returns [{symbol, qty, avg_cost}] — already standardised by OrderManager
         try:
-            resp = self.order_mgr.dhan.get_holdings()
-            # get_holdings() returns {"data": [...]} or just a list depending on SDK version
-            holdings = resp.get("data", []) if isinstance(resp, dict) else []
-
-            # Build a map: {symbol: {qty, avg_cost}} for everything Dhan says we hold
-            held_map = {}
-            for h in holdings:
-                sym = h.get("tradingSymbol") or h.get("symbol", "")
-                qty = int(h.get("availableQty", 0) or h.get("totalQty", 0) or 0)
-                if sym and qty > 0:
-                    # Dhan uses different field names across SDK versions — try all known variants
-                    avg_cost = float(
-                        h.get("avgCostPrice") or h.get("costPrice") or
-                        h.get("buyAvg") or h.get("avgBuyPrice") or 0
-                    )
-                    held_map[sym] = {"qty": qty, "avg_cost": avg_cost}
-
+            holdings = self.order_mgr.get_holdings()
         except Exception as e:
-            log.error(f"Broker sync failed: {e}")
-            return  # if we can't get holdings, don't make any DB changes — safer to do nothing
+            log.error(f"Broker sync: holdings fetch failed: {e}")
+            return  # don't make any DB changes without confirmed broker state
+
+        # Build a map: {symbol: {qty, avg_cost}} for fast lookup
+        held_map = {h["symbol"]: h for h in holdings}
 
         # Build the current DB open trades as a map for easy lookup
         db_open = {t["symbol"]: t for t in self.db.get_open_trades()}
 
-        # --- Direction 1: DB OPEN but not in Dhan → broker already closed it ---
+        # --- Direction 1: DB OPEN but not in Upstox → broker already closed it ---
         for symbol, trade in db_open.items():
             if symbol in held_map:
-                continue  # still in Dhan → still open → no action needed
+                continue  # still in Upstox → still open → no action needed
 
-            # Symbol is in our DB as OPEN but Dhan no longer has it in holdings.
+            # Symbol is in our DB as OPEN but Upstox no longer has it in holdings.
             # Conclusion: the broker's exchange-level SL order fired and we were sold out.
             # Default exit price = the current_sl stored in DB (the SL level that triggered)
             exit_price = trade["current_sl"]
 
             # Try to find the actual fill price from the order history (may be slightly different from SL)
             try:
-                orders_resp = self.order_mgr.dhan.get_order_list()
-                # Walk through orders in reverse (newest first) to find the most recent SELL fill for this symbol
-                for o in reversed(orders_resp.get("data", [])):
-                    if (o.get("tradingSymbol") == symbol and
-                            o.get("transactionType") == "SELL" and
-                            o.get("orderStatus") == "TRADED"):
-                        exit_price = float(o.get("tradedPrice") or o.get("price") or exit_price)
-                        break  # found the fill — stop looking
+                # get_order_list() returns standardised dicts — no broker-specific field names here
+                orders = self.order_mgr.get_order_list()
+                for o in reversed(orders):
+                    if (o["symbol"] == symbol and
+                            o["transaction_type"] == "SELL" and
+                            o["status"] == "complete"):
+                        fill = o.get("average_price", 0)
+                        if fill and float(fill) > 0:
+                            exit_price = float(fill)
+                        break
             except Exception as e:
                 log.warning(f"Could not fetch order history for {symbol}: {e}")
-                # Continue with the SL price as the exit price
+                # Continue with the SL price as the best available exit price
 
             # Calculate net PnL after charges for the trade that just closed
             pnl = ChargesCalculator.calculate_trade_pnl(
@@ -154,22 +144,22 @@ class TradeMonitor:
             # Start the 2-hour loss cooldown — prevents revenge trading after an SL hit
             self.protection.start_loss_cooldown()
 
-        # --- Direction 2: Dhan has holding not in DB → import it ---
+        # --- Direction 2: Upstox has holding not in DB → import it ---
+        from data_collector import INSTRUMENT_KEYS
+        watchlist_symbols = set(INSTRUMENT_KEYS.keys())
+
         for symbol, holding in held_map.items():
             if symbol in db_open:
                 continue  # already tracked in our DB → no action needed
 
-            # This symbol is in Dhan but not in our DB.
-            # Could be: manual buy in Dhan app, or a crash happened after the order was placed but before DB write.
-            if symbol not in self.order_mgr.SECURITY_IDS:
-                # Not one of our 15 watchlist stocks — could be a mutual fund, ETF, or other stock.
-                # Ignore it so we don't accidentally manage positions we didn't intend to trade.
+            # Only import watchlist stocks — ignore ETFs, mutual funds, other manual buys
+            if symbol not in watchlist_symbols:
                 continue
 
             avg_cost = holding["avg_cost"]
             qty      = holding["qty"]
             if avg_cost <= 0:
-                log.warning(f"SYNC → {symbol} found in Dhan but avg_cost unknown — skipping import")
+                log.warning(f"SYNC → {symbol} found in Upstox but avg_cost unknown — skipping import")
                 continue
 
             # Look up the most recent ATR for this stock from our snapshots table.
@@ -215,12 +205,12 @@ class TradeMonitor:
             self.db.save_trade(trade)
             log.info(f"SYNC → {symbol} imported | {qty}×₹{avg_cost:.2f} | SL ₹{sl:.2f} ({sl_method}) | T ₹{target:.2f}")
 
-        # --- Direction 3: DB OPEN + in Dhan but SL order missing → re-place SL ---
+        # --- Direction 3: DB OPEN + in Upstox but SL order missing → re-place SL ---
         # Re-fetch after imports so newly imported trades are also checked for missing SL orders.
         db_open = {t["symbol"]: t for t in self.db.get_open_trades()}
         for symbol, trade in db_open.items():
             if symbol not in held_map:
-                continue  # not in Dhan — already handled in direction 1
+                continue  # not in Upstox — already handled in direction 1
 
             if trade["sl_order_id"]:
                 continue  # SL order already exists — nothing to do
@@ -233,7 +223,7 @@ class TradeMonitor:
             if not sl or sl <= 0:
                 continue  # no SL level to use — skip rather than place a ₹0 SL
 
-            new_id = self.order_mgr.replace_sl_order(symbol, trade["remaining_qty"], sl, "")
+            new_id = self.order_mgr.replace_sl_order_safe(symbol, trade["remaining_qty"], sl, "")
             if new_id:
                 self.db.update_sl_order_id(trade["trade_id"], new_id)
                 log.info(f"SYNC → {symbol} SL order re-placed @ ₹{sl:.2f} | id: {new_id}")
@@ -311,14 +301,43 @@ class TradeMonitor:
             self._execute_exit(trade, price, qty, ExitReason.TIME_BASED.value)
             return
 
-        # --- Exit 4: Upcoming earnings/results event ---
-        # check_event_guard() looks at events_calendar for this symbol.
-        # If an event is within 5 days (EVENT_EXIT_DAYS), it returns (False, "Exit! ...")
-        # We exit now to avoid holding through a gap-risk event (earnings can move ±10%).
-        safe, msg = self.protection.check_event_guard(symbol)
-        if not safe:
-            log.info(f"EVENT EXIT: {symbol} — {msg}")
+        # --- Exit 4: Upcoming earnings/results event (staged response) ---
+        # Three levels of response depending on how close the event is:
+        #   EXIT    (≤2 days) → force exit now, gap risk too high to hold through
+        #   TIGHTEN (≤5 days) → move SL up to entry price (breakeven)
+        #                        if trade is already at a loss, exit immediately
+        #                        if SL already at/above entry, nothing to do here
+        #   WARN    (≤10 days) → log only, no mechanical action yet
+        #   SAFE              → do nothing
+        event_action, event_msg = self.protection.check_event_guard(symbol)
+
+        if event_action == "EXIT":
+            log.info(f"EVENT FORCE EXIT: {symbol} — {event_msg}")
             self._execute_exit(trade, price, qty, ExitReason.EVENT_EXIT.value)
+
+        elif event_action == "TIGHTEN":
+            if price < entry:
+                # Trade is already at a loss and event is approaching — exit now.
+                # Tightening SL above current price would be meaningless (price is already below it).
+                log.info(f"EVENT EXIT (at loss): {symbol} — {event_msg} | "
+                         f"price ₹{price:.2f} below entry ₹{entry:.2f}")
+                self._execute_exit(trade, price, qty, ExitReason.EVENT_EXIT.value)
+            elif sl < entry:
+                # Trade is flat/in profit but SL is still below entry — tighten SL to entry.
+                # Worst case from here: exit at entry = 0 loss (before charges).
+                # The trailing SL system already handles the upside; this just floors the downside.
+                log.info(f"EVENT TIGHTEN SL: {symbol} — {event_msg} | "
+                         f"SL ₹{sl:.2f} → breakeven ₹{entry:.2f}")
+                self.db.update_trade_sl(trade_id, entry)
+                self.db.log_trailing_sl(trade_id, sl, entry, price, "EVENT_TIGHTEN")
+                new_id = self.order_mgr.replace_sl_order_safe(symbol, qty, entry, trade["sl_order_id"])
+                if new_id:
+                    self.db.update_sl_order_id(trade_id, new_id)
+            # If sl >= entry already (tier1 done or adaptive trail is higher), no action needed —
+            # the existing trailing SL already protects us better than breakeven.
+
+        elif event_action == "WARN":
+            log.info(f"EVENT WARN: {symbol} — {event_msg}")
 
     def _update_trailing_sl(self, trade: dict, price: float):
         """
@@ -358,7 +377,7 @@ class TradeMonitor:
             self.db.execute("UPDATE trades SET tier1_done=1, tier1_price=? WHERE trade_id=?",
                             (price, trade_id))
             # Cancel the old SL order at the broker and place a new one at entry price
-            new_id = self.order_mgr.replace_sl_order(trade["symbol"], qty, entry, trade["sl_order_id"])
+            new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, entry, trade["sl_order_id"])
             if new_id:
                 self.db.update_sl_order_id(trade_id, new_id)  # store new order ID for next cancel+replace
 
@@ -377,7 +396,7 @@ class TradeMonitor:
                          f"(price ₹{price:.2f}, protecting 50% of ₹{price - entry:.2f} gain)")
                 self.db.update_trade_sl(trade_id, adaptive_sl)
                 self.db.log_trailing_sl(trade_id, sl, adaptive_sl, price, "ADAPTIVE_TRAIL")
-                new_id = self.order_mgr.replace_sl_order(trade["symbol"], qty, adaptive_sl, trade["sl_order_id"])
+                new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, adaptive_sl, trade["sl_order_id"])
                 if new_id:
                     self.db.update_sl_order_id(trade_id, new_id)
 
@@ -404,7 +423,7 @@ class TradeMonitor:
                 if new_trail_sl > sl:
                     self.db.update_trade_sl(trade_id, new_trail_sl)
                     self.db.log_trailing_sl(trade_id, sl, new_trail_sl, price, "TIER2_SKIP_TRAIL")
-                    new_id = self.order_mgr.replace_sl_order(trade["symbol"], qty, new_trail_sl, trade["sl_order_id"])
+                    new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, new_trail_sl, trade["sl_order_id"])
                     if new_id:
                         self.db.update_sl_order_id(trade_id, new_id)
                 # Mark tier2 done with qty=0 (no partial sell happened) and keep full qty
@@ -424,7 +443,7 @@ class TradeMonitor:
                 )
                 self.db.log_trailing_sl(trade_id, sl, new_sl, price, "TIER2_PARTIAL_EXIT")
                 # Update the broker SL order to protect only the remaining shares
-                new_id = self.order_mgr.replace_sl_order(trade["symbol"], remaining, new_sl, trade["sl_order_id"])
+                new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], remaining, new_sl, trade["sl_order_id"])
                 if new_id:
                     self.db.update_sl_order_id(trade_id, new_id)
                 pnl = ChargesCalculator.calculate_trade_pnl(entry, price, exit_qty)
@@ -447,7 +466,7 @@ class TradeMonitor:
                 self.db.update_trade_sl(trade_id, new_trail_sl)
                 self.db.log_trailing_sl(trade_id, sl, new_trail_sl, price, "TIER3_TRAIL")
                 # Update the broker SL order to the new higher level
-                new_id = self.order_mgr.replace_sl_order(trade["symbol"], qty, new_trail_sl, trade["sl_order_id"])
+                new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, new_trail_sl, trade["sl_order_id"])
                 if new_id:
                     self.db.update_sl_order_id(trade_id, new_id)
 

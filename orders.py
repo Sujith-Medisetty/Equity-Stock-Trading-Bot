@@ -1,345 +1,479 @@
 """
-orders.py — All broker order placement via the Dhan API.
+orders.py — All broker order placement via the Upstox API.
 
 Three types of orders this system places:
 
 1. Entry order (place_entry_order)
-   A LIMIT BUY order placed at entry_price × 1.001 (0.1% above close) so it
-   fills reliably rather than missing by a tick. CNC product type = delivery
-   (we hold overnight, not intraday). Simultaneously places a STOP-LOSS SELL
-   order at sl_price so the SL is sitting at the exchange from the moment we enter.
-   The broker will fire the SL automatically if price falls to that level —
-   we don't need to monitor and manually sell.
+   A LIMIT BUY at entry_price × 1.001 (0.1% above close) for reliable fills.
+   Simultaneously places a STOP-LOSS SELL at sl_price — exchange-level protection
+   that fires automatically even if the bot goes offline.
 
-2. SL order cancel+replace (replace_sl_order)
-   Called every time the trailing SL moves up (tier 1 breakeven, tier 2 tighten,
-   tier 3 trail). Process: cancel the old SL order (identified by sl_order_id
-   stored in the DB) → place a new SL order at the new level. Returns the new
-   order ID which is stored back in the DB via update_sl_order_id().
-   If the cancel fails (e.g. order already executed), we log a warning and
-   still try to place the new SL.
+2. SL order cancel + replace (replace_sl_order)
+   Called whenever the trailing SL moves up (tier 1/2/3).
+   Cancels the old SL order and places a new one at the new level.
+   Retries up to SL_REPLACE_MAX_RETRIES times; places an emergency MARKET SELL
+   if all retries fail so the position is never left unprotected.
 
 3. Exit sell order (place_sell_order)
-   A LIMIT SELL placed at price × 0.999 (slightly below market) for fast fills.
-   Used for: tier 2 partial exit, VIX spike exit, time-based exit, event exit.
-   NOT used for SL exits in live mode — those are handled by the exchange-level
-   SL order placed at entry time.
+   LIMIT SELL at price × 0.999 (0.1% below market) for fast fills.
+   Used for tier 2 partial exit, VIX exit, time exit, event exit.
+   NOT used for SL exits — the exchange-level SL order handles those in live mode.
 
 Paper trade behaviour:
    All three methods log the intended order but skip the actual API call.
-   Paper mode uses real market prices (fetched via get_market_feed_quote)
-   so the paper trade results are realistic — only the order placement is fake.
+   Live prices are always fetched from Upstox (real prices in both paper and live mode).
 
-SECURITY_IDS:
-   Each NSE stock has a numeric security ID that Dhan requires for API calls.
-   These are fixed values — they never change. Stored here as a simple lookup dict
-   rather than making an API call to resolve them each time.
+Upstox instrument keys:
+   Upstox identifies stocks by "NSE_EQ|{ISIN}" format.
+   INSTRUMENT_KEYS maps our symbols to these keys (shared with data_collector.py).
+
+Holdings / order book:
+   get_holdings() and get_order_list() return standardised Python dicts so
+   TradeMonitor.sync_with_broker() doesn't need to know Upstox's internal format.
 """
 
+import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
-from config import Config, log, LIBS_AVAILABLE
+from config import Config, log, LIBS_AVAILABLE, UPSTOX_AVAILABLE
+from data_collector import INSTRUMENT_KEYS, _with_retry
 from models import Trade, Setup
 from database import DatabaseManager
 
 try:
-    from dhanhq import dhanhq
+    import upstox_client
+    from upstox_client.api import OrderApi, PortfolioApi, UserApi, MarketQuoteApi
+    from upstox_client.models import PlaceOrderRequest
+    from upstox_client.rest import ApiException
 except ImportError:
-    dhanhq = None
+    upstox_client    = None
+    OrderApi         = None
+    PortfolioApi     = None
+    UserApi          = None
+    MarketQuoteApi   = None
+    PlaceOrderRequest = None
+    ApiException     = Exception
 
 
 class OrderManager:
     """
-    Handles all broker interactions for order placement.
-    Maintains its own Dhan connection (separate from DataCollector's connection).
+    Handles all broker interactions for order placement and account queries.
+    Maintains its own Upstox API client (separate from DataCollector's client).
     Called by TradingSystem.step5_execute_trades() and TradeMonitor.
     """
 
-    # Fixed NSE security IDs for our 15 watchlist stocks.
-    # These are Dhan-specific numeric IDs — required for all order API calls.
-    # Never changes — each stock has a permanent security ID on NSE.
-    SECURITY_IDS = {
-        "ICICIBANK": "4963",  "HDFCBANK": "1333",
-        "AXISBANK":  "5900",  "INFY":     "1594",
-        "HCLTECH":   "7229",  "TATAMOTORS": "3456",
-        "MARUTI":    "10999", "RELIANCE": "2885",
-        "BHARTIARTL": "10604","SUNPHARMA": "3351",
-        "BAJFINANCE": "317",  "LT":       "11483",
-        "ITC":       "1660",  "TITAN":    "3506",
-        "TCS":       "11536",
-    }
-
     def __init__(self, db: DatabaseManager):
-        self.db   = db
-        self.dhan = None       # Dhan API client — initialised in _init_dhan()
-        self._init_dhan()
+        self.db      = db
+        self._client = None   # Upstox ApiClient — initialised after auth
+        self._auth   = None
+        self._init_upstox()
 
-    def _init_dhan(self):
-        """Connect to Dhan broker API using credentials from environment variables.
-        Uses sandbox credentials in PAPER_TRADE mode, live credentials otherwise.
-        If BACKTEST_MODE is True, skips connection entirely (no broker needed)."""
-        if not LIBS_AVAILABLE or dhanhq is None or Config.BACKTEST_MODE:
+    def _init_upstox(self):
+        """
+        Connects to Upstox using the access token from UpstoxAuth.
+        In BACKTEST_MODE: no broker connection needed — all operations are simulated.
+        In PAPER_TRADE mode: uses real Upstox API for prices + order flow, but
+        orders go to a paper/sandbox account (same API key, different account type).
+        """
+        if not UPSTOX_AVAILABLE or not LIBS_AVAILABLE or Config.BACKTEST_MODE:
             return
         try:
-            if Config.PAPER_TRADE:
-                # Sandbox = Dhan's paper trading environment.
-                # Orders are placed but not executed with real money.
-                self.dhan = dhanhq(Config.DHAN_SANDBOX_CLIENT_ID, Config.DHAN_SANDBOX_ACCESS_TOKEN)
-                log.info("Dhan initialised in SANDBOX mode")
-            else:
-                # Live mode = real money. Credentials from environment variables.
-                self.dhan = dhanhq(Config.DHAN_CLIENT_ID, Config.DHAN_ACCESS_TOKEN)
-                log.info("Dhan initialised in LIVE mode")
+            from upstox_auth import UpstoxAuth
+            self._auth   = UpstoxAuth(self.db)
+            token = self._auth.get_valid_token()
+            if not token:
+                log.warning("OrderManager: no Upstox token — order placement will be skipped.")
+                return
+            self._client = self._build_client(token)
+            mode = "PAPER" if Config.PAPER_TRADE else "LIVE"
+            log.info(f"Upstox OrderManager initialised [{mode} mode].")
         except Exception as e:
-            log.error(f"OrderManager Dhan init failed: {e}")
+            log.error(f"OrderManager Upstox init failed: {e}")
 
-    def _get_security_id(self, symbol: str) -> str:
-        """Returns the Dhan security ID for a symbol. Returns '0' if not found (should never happen
-        for watchlist symbols, but '0' will cause a clean API error rather than a crash)."""
-        return self.SECURITY_IDS.get(symbol, "0")
+    def _build_client(self, token: str) -> "upstox_client.ApiClient":
+        cfg = upstox_client.Configuration()
+        cfg.access_token = token
+        return upstox_client.ApiClient(cfg)
+
+    def _refresh_client_if_needed(self):
+        """Refreshes the API client token before critical operations (order placement)."""
+        if not self._auth or not self._client:
+            return
+        token = self._auth.get_valid_token()
+        if token:
+            self._client = self._build_client(token)
+
+    def _ikey(self, symbol: str) -> str:
+        """Returns the Upstox instrument key for a symbol. Raises ValueError if not mapped."""
+        key = INSTRUMENT_KEYS.get(symbol)
+        if not key:
+            raise ValueError(f"No instrument key mapped for symbol '{symbol}'")
+        return key
+
+    # -------------------------------------------------------------------------
+    # Capital
+    # -------------------------------------------------------------------------
 
     def get_available_capital(self) -> float:
         """
-        Returns the cash balance available for new trades.
-        In live/sandbox mode this comes from Dhan's fund-limits API so it
-        reflects your real account after existing positions are deployed.
-        Falls back to Config.TOTAL_CAPITAL in backtest mode or if the API fails.
+        Returns available cash for new trades from Upstox's fund/margin API.
+        Falls back to Config.TOTAL_CAPITAL in backtest mode or on API failure.
         """
-        if Config.BACKTEST_MODE or not self.dhan:
-            # Backtest: use the configured total capital minus reserve
-            return max(0.0, float(Config.TOTAL_CAPITAL) - Config.CAPITAL_RESERVE)
+        if Config.BACKTEST_MODE or not self._client:
+            return max(0.0, float(Config.TOTAL_CAPITAL))
         try:
-            resp = self.dhan.get_fund_limits()
-            data = resp.get("data", {}) if isinstance(resp, dict) else {}
-            # Dhan returns the field with a typo in some SDK versions — try both spellings
-            balance = float(
-                data.get("availableBalance") or
-                data.get("availabelBalance") or   # Dhan SDK typo — keep for compatibility
-                data.get("net") or 0
-            )
-            if balance <= 0:
-                log.warning("Fund limits returned zero/negative — falling back to Config.TOTAL_CAPITAL")
-                return max(0.0, float(Config.TOTAL_CAPITAL) - Config.CAPITAL_RESERVE)
-            return max(0.0, balance - Config.CAPITAL_RESERVE)
+            api  = UserApi(self._client)
+            resp = api.get_fund_and_margin(api_version="2.0", segment="SEC")
+            equity = resp.data.equity if resp and resp.data else None
+            if equity:
+                balance = float(
+                    getattr(equity, "available_margin", None) or
+                    getattr(equity, "net",              None) or
+                    getattr(equity, "payin_amount",     None) or 0
+                )
+                if balance > 0:
+                    return balance
+            log.warning("Fund/margin API returned zero — falling back to Config.TOTAL_CAPITAL")
         except Exception as e:
-            log.warning(f"Could not fetch fund limits: {e} — falling back to Config.TOTAL_CAPITAL")
-            return max(0.0, float(Config.TOTAL_CAPITAL) - Config.CAPITAL_RESERVE)
+            log.warning(f"get_available_capital failed: {e} — falling back to Config.TOTAL_CAPITAL")
+        return max(0.0, float(Config.TOTAL_CAPITAL))
+
+    # -------------------------------------------------------------------------
+    # Live prices — batch LTP (used by system.py and monitor.py)
+    # -------------------------------------------------------------------------
+
+    def get_live_price(self, symbol: str) -> float:
+        """
+        Returns the current last traded price for a single symbol.
+        Returns 0.0 if Upstox is unavailable or the fetch fails.
+        """
+        prices = self.get_all_live_prices([symbol])
+        return prices.get(symbol, 0.0)
+
+    def get_all_live_prices(self, symbols: list) -> dict:
+        """
+        Batch LTP fetch — returns {symbol: price} for all given symbols in ONE API call.
+        Upstox's MarketQuoteApi.ltp() accepts comma-separated instrument keys.
+        Symbols where fetch failed are absent from the returned dict.
+        """
+        if not self._client:
+            return {}
+        key_to_sym = {INSTRUMENT_KEYS[s]: s for s in symbols if s in INSTRUMENT_KEYS}
+        if not key_to_sym:
+            return {}
+        try:
+            api  = MarketQuoteApi(self._client)
+            resp = api.ltp(",".join(key_to_sym.keys()), api_version="2.0")
+            prices = {}
+            if resp and resp.data:
+                for key, quote in resp.data.items():
+                    sym   = key_to_sym.get(key)
+                    price = getattr(quote, "last_price", None)
+                    if sym and price and float(price) > 0:
+                        prices[sym] = float(price)
+            return prices
+        except Exception as e:
+            log.error(f"Batch LTP fetch failed: {e}")
+            return {}
+
+    # -------------------------------------------------------------------------
+    # Holdings & order book (used by TradeMonitor.sync_with_broker)
+    # -------------------------------------------------------------------------
+
+    def get_holdings(self) -> List[dict]:
+        """
+        Returns current demat holdings from Upstox as a list of standardised dicts:
+          [{symbol, qty, avg_cost}, ...]
+        Returns [] if the API fails — caller (sync_with_broker) handles gracefully.
+        """
+        if Config.BACKTEST_MODE or not self._client:
+            return []
+        try:
+            api  = PortfolioApi(self._client)
+            resp = api.get_holdings(api_version="2.0")
+            holdings = []
+            for h in (resp.data or []):
+                sym = getattr(h, "tradingsymbol", None)
+                qty = int(getattr(h, "quantity", 0) or 0)
+                avg = float(getattr(h, "average_price", 0) or 0)
+                if sym and qty > 0:
+                    holdings.append({"symbol": sym, "qty": qty, "avg_cost": avg})
+            return holdings
+        except Exception as e:
+            log.error(f"get_holdings failed: {e}")
+            return []
+
+    def get_order_list(self) -> List[dict]:
+        """
+        Returns today's order book from Upstox as standardised dicts:
+          [{symbol, transaction_type, status, average_price}, ...]
+        Returns [] on failure. Used by sync_with_broker to find filled SL exits.
+        """
+        if Config.BACKTEST_MODE or not self._client:
+            return []
+        try:
+            api  = OrderApi(self._client)
+            resp = api.get_order_book(api_version="2.0")
+            orders = []
+            for o in (resp.data or []):
+                orders.append({
+                    "symbol":           getattr(o, "tradingsymbol",    ""),
+                    "transaction_type": getattr(o, "transaction_type", ""),
+                    "status":           getattr(o, "status",           ""),
+                    "average_price":    float(getattr(o, "average_price", 0) or 0),
+                })
+            return orders
+        except Exception as e:
+            log.error(f"get_order_list failed: {e}")
+            return []
+
+    # -------------------------------------------------------------------------
+    # Entry order
+    # -------------------------------------------------------------------------
 
     def place_entry_order(self, setup: Setup) -> Optional[str]:
         """
-        Places a BUY order and immediately places an SL SELL order.
-        In paper mode: skips API calls, records trade directly with simulated slippage.
-        In live mode: places both orders via Dhan, stores sl_order_id in DB.
-        Returns the trade_id string on success, None on failure.
+        Places a BUY LIMIT order + an SL SELL order.
+        Paper mode: skips API, records the trade directly (with slippage).
+        Backtest mode: logs intent, records trade immediately.
+        Returns trade_id string on success, None on failure.
         """
-        # Generate a unique trade ID: symbol + timestamp
-        # e.g. "ICICIBANK_20240509093015"
         trade_id = f"{setup.symbol}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
+        mode_tag = "[PAPER]" if Config.PAPER_TRADE else "[LIVE]"
 
-        # Apply paper trading slippage to the entry price.
-        # In real trading, limit orders often fill slightly worse than LTP.
-        # 0.2% adverse slippage on buys = entry price is slightly higher than LTP.
-        # This makes paper PNL more conservative and realistic.
+        # Apply paper slippage to entry — makes paper PnL realistically conservative
         if Config.PAPER_TRADE and not Config.BACKTEST_MODE:
             setup.entry_price = round(setup.entry_price * (1 + Config.PAPER_SLIPPAGE_PCT), 2)
 
-        # Backtest mode: no API calls at all — just log and record
         if Config.BACKTEST_MODE:
             log.info(f"[BACKTEST] BUY {setup.shares}×{setup.symbol} @ ₹{setup.entry_price:.2f} "
-                     f"SL:₹{setup.sl_price:.2f} T:₹{setup.target_price:.2f}")
+                     f"SL ₹{setup.sl_price:.2f} T ₹{setup.target_price:.2f}")
             self._record_trade(trade_id, setup)
             return trade_id
 
-        if not self.dhan:
-            log.error("Dhan API not initialized")
+        if not self._client:
+            log.error("Upstox client not initialised — cannot place order.")
             return None
 
+        self._refresh_client_if_needed()
+
         try:
-            # Place the BUY order.
-            # price = entry × 1.001: a tiny 0.1% premium above LTP so our LIMIT order
-            # sits just above the ask — fills immediately rather than waiting.
-            # CNC = Cash and Carry = delivery (hold overnight, not intraday MIS).
-            self.dhan.place_order(
-                security_id=self._get_security_id(setup.symbol),
-                exchange_segment=self.dhan.NSE,
-                transaction_type=self.dhan.BUY,
-                quantity=setup.shares,
-                order_type=self.dhan.LIMIT,
-                product_type=self.dhan.CNC,           # delivery — holds overnight
-                price=round(setup.entry_price * 1.001, 2)  # 0.1% above close for reliable fill
-            )
+            instrument_key = self._ikey(setup.symbol)
+            api = OrderApi(self._client)
 
-            # Immediately place the SL SELL order at the exchange level.
-            # This is a STOP-LOSS order: it activates when price FALLS to sl_price.
-            # The broker holds this order at the exchange — if we go offline, price
-            # can still hit the SL and the broker will execute the sell automatically.
-            sl_order = self.dhan.place_order(
-                security_id=self._get_security_id(setup.symbol),
-                exchange_segment=self.dhan.NSE,
-                transaction_type=self.dhan.SELL,
-                quantity=setup.shares,
-                order_type=self.dhan.SL,              # stop-loss order type
-                product_type=self.dhan.CNC,
-                price=setup.sl_price,                 # the limit price for the SL order
-                trigger_price=setup.sl_price          # the trigger that activates the order
+            # BUY LIMIT at 0.1% above LTP for reliable fill
+            buy_price = round(setup.entry_price * 1.001, 2)
+            buy_resp  = api.place_order(
+                PlaceOrderRequest(
+                    quantity=setup.shares,
+                    product="D",               # D = Delivery (CNC equivalent)
+                    validity="DAY",
+                    price=buy_price,
+                    instrument_token=instrument_key,
+                    order_type="LIMIT",
+                    transaction_type="BUY",
+                    disclosed_quantity=0,
+                    trigger_price=0.0,
+                    is_amo=False,
+                    tag="bot_entry",
+                ),
+                api_version="2.0"
             )
+            log.info(f"{mode_tag} BUY placed: {setup.shares}×{setup.symbol} @ ₹{buy_price:.2f} "
+                     f"| order_id: {getattr(buy_resp.data, 'order_id', 'N/A')}")
 
-            # Extract the order ID from the response — Dhan's response format varies by SDK version
-            sl_order_id = str(
-                (sl_order.get("data") or {}).get("orderId") or
-                sl_order.get("orderId", "")
+            # SL SELL — exchange-level stop, fires even if bot goes offline
+            sl_resp = api.place_order(
+                PlaceOrderRequest(
+                    quantity=setup.shares,
+                    product="D",
+                    validity="DAY",
+                    price=setup.sl_price,         # limit price (matches trigger for immediate fill on breach)
+                    instrument_token=instrument_key,
+                    order_type="SL",              # stop-loss order type
+                    transaction_type="SELL",
+                    disclosed_quantity=0,
+                    trigger_price=setup.sl_price, # activates when price falls to this level
+                    is_amo=False,
+                    tag="bot_sl",
+                ),
+                api_version="2.0"
             )
-            log.info(f"{mode_tag} orders placed: {setup.symbol} | SL order id: {sl_order_id}")
+            sl_order_id = getattr(sl_resp.data, "order_id", "") or ""
+            log.info(f"{mode_tag} SL placed: {setup.symbol} @ ₹{setup.sl_price:.2f} "
+                     f"| sl_order_id: {sl_order_id}")
 
-            # Save the trade to DB including the sl_order_id.
-            # sl_order_id is critical: needed later to cancel+replace when SL level changes.
-            self._record_trade(trade_id, setup, sl_order_id)
+            self._record_trade(trade_id, setup, str(sl_order_id))
             return trade_id
 
         except Exception as e:
-            log.error(f"Order placement failed for {setup.symbol}: {e}")
-            return None  # caller (step5) checks for None and logs the failure
+            log.error(f"Entry order failed for {setup.symbol}: {e}")
+            return None
 
     def _record_trade(self, trade_id: str, setup: Setup, sl_order_id: str = ""):
-        """Creates a Trade object and saves it to DB. Called after successful order placement.
-        remaining_qty starts equal to quantity — it decreases as partial exits happen at tier 2."""
+        """Creates a Trade object and persists it to DB after successful order placement."""
         trade = Trade(
             trade_id=trade_id,
             symbol=setup.symbol,
-            strategy=setup.strategy.value,       # e.g. "SWING", "BREAKOUT" — stored as string in DB
+            strategy=setup.strategy.value,
             entry_date=datetime.now().strftime("%Y-%m-%d"),
-            entry_price=setup.entry_price,        # live price at time of order (already updated from step5)
+            entry_price=setup.entry_price,
             quantity=setup.shares,
-            initial_sl=setup.sl_price,            # original SL — never changes (used to calculate risk)
-            initial_target=setup.target_price,    # original 2:1 target — never changes
-            current_sl=setup.sl_price,            # current SL — starts same as initial, moves up with trailing
-            current_price=setup.entry_price,      # starting current_price = entry price
-            remaining_qty=setup.shares,           # starts full — decreases after tier 2 partial sell
+            initial_sl=setup.sl_price,
+            initial_target=setup.target_price,
+            current_sl=setup.sl_price,
+            current_price=setup.entry_price,
+            remaining_qty=setup.shares,
             setup_score=setup.score,
             market_mode_at_entry=setup.market_mode,
-            sl_order_id=sl_order_id               # Dhan order ID — needed to cancel+replace on SL updates
+            sl_order_id=sl_order_id,
         )
         self.db.save_trade(trade)
         log.info(f"Trade recorded: {trade_id}")
 
+    # -------------------------------------------------------------------------
+    # SL replace (trailing SL updates)
+    # -------------------------------------------------------------------------
+
+    @_with_retry(max_attempts=Config.SL_REPLACE_MAX_RETRIES, base_delay=Config.SL_REPLACE_RETRY_DELAY)
     def replace_sl_order(self, symbol: str, qty: int,
                           new_sl: float, old_order_id: str) -> str:
         """
         Cancels the old exchange-level SL order and places a new one at new_sl.
-        Called whenever the trailing SL moves up: tier 1 (breakeven), tier 2 (tighten),
-        or tier 3 (1×ATR trail after each new high).
+        Called on every trailing SL advance (tier 1 breakeven / tier 2 tighten / tier 3 trail).
+        Returns the new Upstox order ID so it can be stored in DB for the next cancel+replace.
+        Returns "" in paper/backtest mode or if placement fails after all retries.
 
-        Retries up to SL_REPLACE_MAX_RETRIES times on failure. If all retries fail,
-        places an emergency market sell to prevent an unprotected position.
-
-        Returns the new Dhan order ID so it can be saved back to the DB.
-        Returns "" in paper mode or if the API call fails.
+        Decorated with @_with_retry(max_attempts=SL_REPLACE_MAX_RETRIES) — on total failure
+        (all retries exhausted), the decorator raises the last exception. The calling code in
+        monitor.py catches this and triggers the emergency MARKET SELL below.
         """
         if Config.BACKTEST_MODE:
-            log.info(f"[BACKTEST] SL replaced: {symbol} → ₹{new_sl:.2f} qty {qty}")
-            return ""  # no real orders in backtest mode
-
-        if not self.dhan:
+            log.info(f"[BACKTEST] SL replaced: {symbol} → ₹{new_sl:.2f}")
             return ""
 
-        mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
+        if not self._client:
+            return ""
 
-        # Cancel the old SL order first.
-        # It's OK if this fails (e.g. order already executed) — we still try to place the new one.
+        mode_tag = "[PAPER]" if Config.PAPER_TRADE else "[LIVE]"
+
+        # Cancel old SL — failure here is acceptable (order may have already executed)
         if old_order_id:
             try:
-                self.dhan.cancel_order(order_id=old_order_id)
+                OrderApi(self._client).cancel_order(old_order_id, api_version="2.0")
                 log.info(f"Cancelled SL order {old_order_id} for {symbol}")
             except Exception as e:
-                log.warning(f"Could not cancel SL order {old_order_id}: {e}")
+                log.warning(f"Could not cancel SL {old_order_id} for {symbol}: {e} (may already be filled)")
 
-        import time
-
-        # Try placing the new SL order up to SL_REPLACE_MAX_RETRIES times.
-        # A failed SL placement is serious — the position is temporarily unprotected.
-        for attempt in range(1, Config.SL_REPLACE_MAX_RETRIES + 1):
-            try:
-                sl_order = self.dhan.place_order(
-                    security_id=self._get_security_id(symbol),
-                    exchange_segment=self.dhan.NSE,
-                    transaction_type=self.dhan.SELL,
-                    quantity=qty,
-                    order_type=self.dhan.SL,
-                    product_type=self.dhan.CNC,
-                    price=new_sl,
-                    trigger_price=new_sl
-                )
-                new_id = str(
-                    (sl_order.get("data") or {}).get("orderId") or
-                    sl_order.get("orderId", "")
-                )
-                log.info(f"{mode_tag} New SL order placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
-                return new_id   # success — return new order ID
-
-            except Exception as e:
-                log.error(f"SL placement attempt {attempt}/{Config.SL_REPLACE_MAX_RETRIES} "
-                          f"failed for {symbol}: {e}")
-                if attempt < Config.SL_REPLACE_MAX_RETRIES:
-                    time.sleep(Config.SL_REPLACE_RETRY_DELAY)  # wait before retry
-
-        # All retries exhausted — position is unprotected.
-        # Place an emergency MARKET sell to exit the position immediately.
-        # Better to exit at market price than to have no protection at all.
-        log.critical(
-            f"EMERGENCY: All {Config.SL_REPLACE_MAX_RETRIES} SL placement attempts failed for "
-            f"{symbol}. Placing emergency MARKET SELL to protect capital."
-        )
-        try:
-            self.dhan.place_order(
-                security_id=self._get_security_id(symbol),
-                exchange_segment=self.dhan.NSE,
-                transaction_type=self.dhan.SELL,
+        sl_resp = OrderApi(self._client).place_order(
+            PlaceOrderRequest(
                 quantity=qty,
-                order_type=self.dhan.MARKET,   # market order — fills immediately at best available price
-                product_type=self.dhan.CNC,
-                price=0                         # price=0 for market orders
+                product="D",
+                validity="DAY",
+                price=new_sl,
+                instrument_token=self._ikey(symbol),
+                order_type="SL",
+                transaction_type="SELL",
+                disclosed_quantity=0,
+                trigger_price=new_sl,
+                is_amo=False,
+                tag="bot_sl",
+            ),
+            api_version="2.0"
+        )
+        new_id = str(getattr(sl_resp.data, "order_id", "") or "")
+        log.info(f"{mode_tag} New SL placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
+        return new_id
+
+    def replace_sl_order_safe(self, symbol: str, qty: int,
+                               new_sl: float, old_order_id: str) -> str:
+        """
+        Wrapper around replace_sl_order that catches all-retry-exhausted failures
+        and fires an emergency MARKET SELL to avoid leaving the position unprotected.
+        This is the method TradeMonitor should call — never call replace_sl_order directly.
+        """
+        try:
+            return self.replace_sl_order(symbol, qty, new_sl, old_order_id)
+        except Exception:
+            # All SL_REPLACE_MAX_RETRIES attempts failed — position is unprotected.
+            log.critical(
+                f"EMERGENCY: SL replacement exhausted all retries for {symbol} "
+                f"({Config.SL_REPLACE_MAX_RETRIES} attempts). Placing emergency MARKET SELL."
             )
-            log.critical(f"EMERGENCY SELL placed for {symbol} × {qty} shares")
+            self._emergency_sell(symbol, qty)
+            return ""
+
+    def _emergency_sell(self, symbol: str, qty: int):
+        """Last-resort MARKET SELL when SL order placement has failed repeatedly."""
+        if not self._client:
+            return
+        try:
+            resp = OrderApi(self._client).place_order(
+                PlaceOrderRequest(
+                    quantity=qty,
+                    product="D",
+                    validity="DAY",
+                    price=0.0,                      # price=0 for market orders in Upstox
+                    instrument_token=self._ikey(symbol),
+                    order_type="MARKET",
+                    transaction_type="SELL",
+                    disclosed_quantity=0,
+                    trigger_price=0.0,
+                    is_amo=False,
+                    tag="bot_emergency",
+                ),
+                api_version="2.0"
+            )
+            log.critical(f"EMERGENCY MARKET SELL placed: {qty}×{symbol} "
+                         f"| order_id: {getattr(resp.data, 'order_id', 'N/A')}")
         except Exception as e2:
             log.critical(f"EMERGENCY SELL ALSO FAILED for {symbol}: {e2} — POSITION UNPROTECTED")
-        return ""
+
+    # -------------------------------------------------------------------------
+    # Exit sell (tier 2 partial / VIX / time / event exits)
+    # -------------------------------------------------------------------------
 
     def place_sell_order(self, symbol: str, qty: int,
                           price: float, reason: str) -> bool:
         """
-        Places a LIMIT SELL slightly below market (price × 0.999) for fast fills.
-        In paper mode: applies slippage simulation so paper exits are conservative.
-        Used for: tier 2 partial exit, VIX spike exit, time-based exit, event exit.
-        NOT for SL exits — in live mode, the exchange-level SL order handles those.
-        Returns True on success (or in paper mode), False on API failure.
+        Places a LIMIT SELL at price × 0.999 (0.1% below market) for fast fills.
+        Paper mode: applies slippage but still records as success.
+        Returns True on success, False on API failure.
+        NOT used for SL exits — those are handled by the exchange-level SL order.
         """
         if Config.BACKTEST_MODE:
             log.info(f"[BACKTEST] SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
-            return True  # always succeeds in backtest mode
+            return True
 
-        if not self.dhan:
+        if not self._client:
             return False
 
-        # Apply slippage to paper exits: sell fills are slightly worse (lower) than LTP.
-        # 0.2% adverse slippage on sells makes paper exits more conservative.
         if Config.PAPER_TRADE:
             price = round(price * (1 - Config.PAPER_SLIPPAGE_PCT), 2)
 
-        mode_tag = "[SANDBOX]" if Config.PAPER_TRADE else "[LIVE]"
-        log.info(f"{mode_tag} SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
+        mode_tag = "[PAPER]" if Config.PAPER_TRADE else "[LIVE]"
+        sell_price = round(price * 0.999, 2)   # 0.1% below market for reliable fill
+        log.info(f"{mode_tag} SELL {qty}×{symbol} @ ₹{sell_price:.2f} | {reason}")
+
         try:
-            self.dhan.place_order(
-                security_id=self._get_security_id(symbol),
-                exchange_segment=self.dhan.NSE,
-                transaction_type=self.dhan.SELL,
-                quantity=qty,
-                order_type=self.dhan.LIMIT,
-                product_type=self.dhan.CNC,
-                price=round(price * 0.999, 2)   # 0.1% below current price — ensures fast fill vs. waiting at exact price
+            OrderApi(self._client).place_order(
+                PlaceOrderRequest(
+                    quantity=qty,
+                    product="D",
+                    validity="DAY",
+                    price=sell_price,
+                    instrument_token=self._ikey(symbol),
+                    order_type="LIMIT",
+                    transaction_type="SELL",
+                    disclosed_quantity=0,
+                    trigger_price=0.0,
+                    is_amo=False,
+                    tag=f"bot_{reason[:20].lower().replace(' ', '_')}",
+                ),
+                api_version="2.0"
             )
             return True
         except Exception as e:
-            log.error(f"Sell order failed {symbol}: {e}")
+            log.error(f"Sell order failed for {symbol}: {e}")
             return False

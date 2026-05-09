@@ -204,7 +204,7 @@ class Trade:
     - tier2: at 2:1 RR → sell 50% shares, SL tightens near target
     - tier3: beyond 2:1 → trail remaining 50% at 1×ATR below new highs
 
-    sl_order_id: the Dhan order ID of the SL order sitting at the exchange.
+    sl_order_id: the Upstox order ID of the SL order sitting at the exchange.
     Needed so we can cancel + replace it when the trailing SL moves up.
     """
     trade_id:       str
@@ -245,4 +245,4 @@ class Trade:
     exit_reason:          str = ""
     exit_date:            str = ""
     holding_days:         int = 0
-    sl_order_id:          str = ""  # Dhan order ID — needed for cancel+replace on SL update
+    sl_order_id:          str = ""  # Upstox order ID — needed for cancel+replace on SL update

@@ -1,16 +1,16 @@
 """
 database.py — SQLite persistence layer for the trading system.
 
-This is NOT the source of truth for what positions you hold. That's Dhan.
+This is NOT the source of truth for what positions you hold. That's Upstox.
 The database stores:
   - Historical records so we can analyse performance, compute tax, and audit decisions
   - Live trade metadata (entry price, SL level, tier progress, broker SL order ID)
-    needed because Dhan's API doesn't store our custom fields like trailing SL tiers
+    needed because Upstox's API doesn't store our custom fields like trailing SL tiers
   - Protection state (cooldown_until, trading_halted) that must survive restarts
   - Market/FII snapshots for backtesting and trend analysis
 
 Every morning on startup, TradeMonitor.sync_with_broker() reconciles the trades
-table against live Dhan holdings — any trade that the broker already exited gets
+table against live Upstox holdings — any trade that the broker already exited gets
 marked CLOSED in the DB so the two are in sync before the day begins.
 
 Tables:
@@ -342,7 +342,7 @@ class DatabaseManager:
         self.execute("UPDATE trades SET current_sl=? WHERE trade_id=?", (new_sl, trade_id))
 
     def update_sl_order_id(self, trade_id: str, sl_order_id: str):
-        """Store the new Dhan order ID after a cancel+replace. Without this stored,
+        """Store the new Upstox order ID after a cancel+replace. Without this stored,
         the next SL update won't know which order to cancel."""
         self.execute("UPDATE trades SET sl_order_id=? WHERE trade_id=?", (sl_order_id, trade_id))
 

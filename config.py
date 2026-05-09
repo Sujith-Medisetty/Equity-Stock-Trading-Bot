@@ -8,7 +8,7 @@ Two things live here:
 Why everything is in one place:
 - Easy to review risk settings before going live
 - No magic numbers scattered across files
-- PAPER_TRADE=True uses Dhan sandbox; PAPER_TRADE=False is live; BACKTEST_MODE=True is fully offline
+- PAPER_TRADE=True uses Upstox paper account; PAPER_TRADE=False is live; BACKTEST_MODE=True is fully offline
 """
 
 import os
@@ -17,20 +17,21 @@ from typing import Optional
 
 # Third-party availability flags.
 # The system degrades gracefully if packages are missing —
-# data fetching falls back to mock OHLCV, Dhan orders are skipped.
+# data fetching falls back to mock OHLCV, Upstox orders are skipped.
 try:
     import pandas as pd
     import numpy as np
     LIBS_AVAILABLE = True
 except ImportError:
     LIBS_AVAILABLE = False
-    print("Run: pip install dhanhq pandas numpy requests schedule")
+    print("Run: pip install upstox-python-sdk upstox-totp pandas numpy requests pyotp schedule pnsea")
 
 try:
-    from dhanhq import dhanhq
-    DHAN_AVAILABLE = True
+    import upstox_client
+    UPSTOX_AVAILABLE = True
 except ImportError:
-    DHAN_AVAILABLE = False
+    UPSTOX_AVAILABLE = False
+    print("upstox-python-sdk not installed — pip install upstox-python-sdk")
 
 try:
     import schedule
@@ -57,7 +58,7 @@ class Config:
     Every constant the system uses. Read-only at runtime — never mutate these
     during execution except PAPER_TRADE / BACKTEST_MODE which main.py flips.
 
-    Capital rules (percentage-based, auto-scaled from live Dhan balance):
+    Capital rules (percentage-based, auto-scaled from live Upstox balance):
     - Max 25% of available capital per stock
     - Max 0.75% of available capital at risk per trade
     - Max 4 open positions simultaneously
@@ -70,18 +71,34 @@ class Config:
     - ₹20000 drawdown   → full stop, review needed
     """
 
-    # --- Dhan API credentials (live) ---
-    DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID",    "YOUR_CLIENT_ID")
-    DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
+    # --- Upstox API credentials ---
+    # Get these from https://developer.upstox.com after creating an app.
+    # UPSTOX_MOBILE, UPSTOX_PIN, UPSTOX_TOTP_SECRET enable fully headless daily auth.
+    # Without these, the bot prints a URL on startup that needs one manual browser login.
+    UPSTOX_API_KEY      = os.getenv("UPSTOX_API_KEY",      "YOUR_API_KEY")
+    UPSTOX_API_SECRET   = os.getenv("UPSTOX_API_SECRET",   "YOUR_API_SECRET")
+    UPSTOX_REDIRECT_URI = os.getenv("UPSTOX_REDIRECT_URI", "http://127.0.0.1:8765/callback")
+    # Credentials for automated headless login (avoids manual browser auth each day)
+    UPSTOX_MOBILE       = os.getenv("UPSTOX_MOBILE",       "")   # 10-digit mobile (login username)
+    UPSTOX_PASSWORD     = os.getenv("UPSTOX_PASSWORD",     "")   # Upstox account password
+    UPSTOX_PIN          = os.getenv("UPSTOX_PIN",          "")   # 6-digit MPIN (trading PIN)
+    UPSTOX_TOTP_SECRET  = os.getenv("UPSTOX_TOTP_SECRET",  "")   # base32 secret from Upstox 2FA setup
 
-    # --- Dhan sandbox credentials (paper trade) ---
-    # Get these from Dhan's sandbox portal — separate from your live account.
-    DHAN_SANDBOX_CLIENT_ID    = os.getenv("DHAN_SANDBOX_CLIENT_ID",    "YOUR_SANDBOX_CLIENT_ID")
-    DHAN_SANDBOX_ACCESS_TOKEN = os.getenv("DHAN_SANDBOX_ACCESS_TOKEN", "YOUR_SANDBOX_ACCESS_TOKEN")
+    # --- Upstox API rate limiting & parallel fetch ---
+    # Upstox allows ~250 req/min = ~4 req/sec sustained.
+    # max_workers=5 with rate limiter at 3.5 req/sec keeps us safely under the limit
+    # even with burst concurrency. Increase carefully — 429s fall back to mock data.
+    UPSTOX_MAX_WORKERS       = 5     # concurrent threads for parallel OHLCV fetching
+    UPSTOX_RATE_LIMIT_PER_SEC = 3.5  # max API calls per second across all threads
+
+    # --- Retry config (applies to all Upstox API calls) ---
+    API_MAX_RETRIES   = 3    # total attempts per call (1 original + 2 retries)
+    API_RETRY_BASE_S  = 1.0  # base delay in seconds before first retry
+    API_RETRY_BACKOFF = 2.0  # exponential backoff multiplier (1s → 2s → 4s)
 
     # --- Capital rules ---
     # TOTAL_CAPITAL is used only in BACKTEST_MODE.
-    # In live/sandbox mode the actual available balance is fetched from Dhan
+    # In live/sandbox mode the actual available balance is fetched from Upstox
     # via get_available_capital() on every step1 run, so limits auto-scale
     # with your real portfolio as positions are added or closed.
     TOTAL_CAPITAL           = 200000   # backtest fallback only
@@ -176,7 +193,9 @@ class Config:
     # FII_FLOW and BREAKOUT strategies expect gap-ups — allow wider drift for these.
     MAX_ENTRY_DRIFT_PCT_WIDE = 3.0
     WIDE_DRIFT_STRATEGIES  = {"FII_FLOW", "BREAKOUT", "WEEK52"}
-    EVENT_EXIT_DAYS        = 5    # exit if earnings/results within 5 days
+    EVENT_WARN_DAYS        = 10   # log warning if earnings/results within 10 days
+    EVENT_EXIT_DAYS        = 5    # tighten SL to breakeven if event within 5 days (exit if at a loss)
+    EVENT_FORCE_EXIT_DAYS  = 2    # force exit unconditionally if event within 2 days
 
     # --- Slippage simulation (paper mode only) ---
     # In live trading, fills are slightly worse than LTP due to spread and queue position.
@@ -219,9 +238,9 @@ class Config:
     # --- System settings ---
     DB_PATH      = "trading.db"  # SQLite file — created automatically on first run
 
-    # PAPER_TRADE = True  → uses Dhan's sandbox API (real order flow, simulated fills).
-    #                       Set DHAN_SANDBOX_CLIENT_ID / DHAN_SANDBOX_ACCESS_TOKEN env vars.
-    # PAPER_TRADE = False → live mode, real money, uses DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN.
+    # PAPER_TRADE = True  → uses Upstox paper/sandbox account (same API key, simulated fills).
+    #                       Orders are placed but money doesn't move.
+    # PAPER_TRADE = False → live mode, real money. Requires explicit --live confirmation.
     PAPER_TRADE  = True
 
     # BACKTEST_MODE = True → fully offline historical simulation.

@@ -69,13 +69,13 @@ class TradingSystem:
         # They share a single DatabaseManager (self.db) so all reads/writes
         # go to the same SQLite connection and transaction context.
         self.db            = DatabaseManager()
-        self.collector     = DataCollector(self.db)           # fetches OHLCV, VIX, FII from Dhan + NSE
+        self.collector     = DataCollector(self.db)           # fetches OHLCV, VIX, FII from Upstox + NSE
         self.market_mode_eng = MarketModeEngine(self.db)      # converts VIX + Nifty + FII → MarketMode enum
         self.screener      = StockScreener(self.db)           # hard filters — eliminates structurally bad stocks
         self.strategy_eng  = StrategyEngine()                 # evaluates 5 strategies and scores setups
         self.risk_mgr      = RiskManager(self.db)             # sizes positions and runs pre-trade checklist
         self.protection    = ProtectionEngine(self.db)        # circuit breakers: loss limits, cooldowns, timing
-        self.order_mgr     = OrderManager(self.db)            # places/cancels orders at Dhan broker
+        self.order_mgr     = OrderManager(self.db)            # places/cancels orders at Upstox broker
         self.monitor       = TradeMonitor(self.db, self.order_mgr, self.protection)  # 15-min exit + trailing SL loop
         self.analytics     = PerformanceAnalytics(self.db)    # PnL dashboard + tax computation
         self.briefing      = MorningBriefing(self.db)         # 9:15 AM human-readable summary
@@ -89,9 +89,9 @@ class TradingSystem:
         self.stocks_data       = {}                       # symbol → StockData dict, populated in step1
         self.nifty_data        = None                     # StockData for NIFTY 50, used for RS calculation
         self.todays_setups     = []                       # all Setup objects from step4, used in morning briefing
-        self.available_capital = float(Config.TOTAL_CAPITAL)  # refreshed from Dhan fund limits in step1
+        self.available_capital = float(Config.TOTAL_CAPITAL)  # refreshed from Upstox fund limits in step1
 
-        # On startup: immediately reconcile DB against actual Dhan holdings.
+        # On startup: immediately reconcile DB against actual Upstox holdings.
         # Catches any SL orders the broker executed since last run (overnight, weekend).
         # Without this, the DB would still show those trades as OPEN — causing screener
         # to block their sector and cap count to be wrong for the whole day.
@@ -138,38 +138,29 @@ class TradingSystem:
             # (is Nifty above EMA20? EMA50? EMA200? What is Nifty's RSI?)
             self.nifty_data = IndicatorEngine.calculate_all(nifty_df, "NIFTY50")
 
-        # --- Per-stock data collection ---
-        for sym in Watchlist.get_symbols():
-            # Daily bars for indicator calculation (EMAs, RSI, MACD, ATR, OBV, etc.)
-            df_daily  = self.collector.fetch_ohlcv_daily(sym, days=250)
+        # --- Per-stock data collection (parallel fetch across all 15+ symbols) ---
+        # fetch_all_ohlcv_parallel() fires UPSTOX_MAX_WORKERS threads simultaneously,
+        # with a shared rate limiter so combined request rate stays under Upstox's limit.
+        # Each call retries up to API_MAX_RETRIES times with exponential backoff.
+        # Returns {symbol: (df_daily, df_4h, df_weekly)} — None tuples for failed symbols.
+        all_ohlcv = self.collector.fetch_all_ohlcv_parallel(Watchlist.get_symbols())
 
-            # 60-min bars for 4H timeframe check: is price above 20-EMA on the hourly chart?
-            # 30 days of 60-min bars = ~180 candles — enough for a 20-period EMA on hourly
-            df_4h     = self.collector.fetch_ohlcv_intraday(sym, "60", 30)
-
-            # 500 days for the weekly check: price above 20-week EMA?
-            # We use daily bars resampled to weekly — 500 daily bars ≈ 100 weekly bars
-            df_weekly = self.collector.fetch_ohlcv_daily(sym, days=500)
+        for sym, (df_daily, df_4h, df_weekly) in all_ohlcv.items():
+            if df_daily is None:
+                log.warning(f"Skipping {sym} — daily OHLCV fetch failed (no mock in live mode).")
+                continue
 
             # Build the StockData object with all daily indicators.
             # nifty_df is passed here so RS score can be computed inside calculate_all()
-            s_data    = IndicatorEngine.calculate_all(df_daily, sym, nifty_df)
+            s_data = IndicatorEngine.calculate_all(df_daily, sym, nifty_df)
 
             if s_data:
-                # Attach multi-timeframe checks to StockData.
-                # These are calculated from intraday and weekly data — separate from daily.
                 s_data.h4_bullish     = IndicatorEngine.check_4h_bullish(df_4h)
                 s_data.weekly_bullish = IndicatorEngine.check_weekly_bullish(df_weekly)
-
-                # tf_aligned_count = how many of the 3 timeframes (weekly/daily/4H) are bullish.
-                # Most strategies require at least 2 out of 3 for confirmation.
-                s_data.tf_aligned_count = sum([s_data.weekly_bullish, s_data.daily_bullish, s_data.h4_bullish])
-
-                # Store in memory for immediate use by steps 3-5 today
+                s_data.tf_aligned_count = sum([
+                    s_data.weekly_bullish, s_data.daily_bullish, s_data.h4_bullish
+                ])
                 self.stocks_data[sym] = s_data
-
-                # Also persist to DB so we have a historical record of indicators
-                # (useful for debugging: "what was ICICIBANK's RSI on 2024-05-09?")
                 self.db.save_stock_snapshot(s_data)
 
         # Fetch and save upcoming earnings/results dates for all 15 stocks.
@@ -177,7 +168,7 @@ class TradingSystem:
         events = self.collector.fetch_events_calendar()
         self.collector.save_events(events)
 
-        # Refresh available capital from Dhan's fund limits API.
+        # Refresh available capital from Upstox's fund limits API.
         # This is the real cash available AFTER existing positions are deployed.
         # Used in step5 to cap position sizes correctly.
         self.available_capital = self.order_mgr.get_available_capital()
@@ -564,41 +555,27 @@ class TradingSystem:
         log.info("MIDDAY SCAN complete")
 
     def _get_live_price(self, symbol: str) -> float:
-        """Fetches current live price for one symbol from Dhan market feed.
-        Returns 0.0 if Dhan is not connected or the API call fails.
-        Callers check > 0 before using the result."""
-        if not self.order_mgr.dhan:
-            return 0.0
-        try:
-            quote = self.order_mgr.dhan.get_market_feed_quote(
-                security_id=self.order_mgr._get_security_id(symbol),
-                exchange_segment="NSE_EQ"
-            )
-            if quote and "data" in quote:
-                return float(quote["data"].get("ltp", 0))  # ltp = Last Traded Price
-        except Exception as e:
-            log.warning(f"Live price fetch failed for {symbol}: {e}")
-        return 0.0
+        """Returns the current live price for one symbol via Upstox batch LTP.
+        Returns 0.0 if Upstox is unavailable or the fetch fails."""
+        prices = self.order_mgr.get_all_live_prices([symbol])
+        return prices.get(symbol, 0.0)
 
     def _get_all_live_prices(self) -> dict:
-        """Fetches current live prices for all 15 watchlist stocks.
-        Returns a dict of {symbol: price}. Symbols where fetch failed are absent from the dict."""
-        prices = {}
-        for symbol in Watchlist.get_symbols():
-            p = self._get_live_price(symbol)
-            if p > 0:
-                prices[symbol] = p
-        return prices
+        """
+        Returns live prices for all watchlist symbols in ONE Upstox batch LTP call.
+        Dict of {symbol: price}. Symbols where fetch failed are absent.
+        """
+        return self.order_mgr.get_all_live_prices(Watchlist.get_symbols())
 
     # =========================================================================
     # STEP 6: Intraday monitoring (every 15 mins from 9:30 AM to 3:30 PM)
-    # Fetches current prices from Dhan (real prices in both paper and live mode),
+    # Fetches current prices from Upstox (real prices in both paper and live mode),
     # then passes them to TradeMonitor for exit checks and trailing SL updates.
     # =========================================================================
 
     def step6_monitor_trades(self):
         # Get current live prices for all open positions.
-        # Falls back to last known price if Dhan is unavailable.
+        # Falls back to last known price if Upstox is unavailable.
         current_prices = self._get_current_prices()
 
         # TradeMonitor does: broker sync → exit checks → trailing SL updates.
@@ -607,39 +584,29 @@ class TradingSystem:
 
     def _get_current_prices(self) -> dict:
         """
-        Always fetch real live prices from Dhan — both paper and live mode.
-        Paper mode only skips order placement, not data fetching.
-        Falls back to last known price if Dhan is unavailable.
+        Fetches live prices for all open positions via a single Upstox batch LTP call.
+        Falls back to the last known price from DB if the API call fails — so the
+        monitoring cycle still runs even if Upstox is temporarily unreachable.
         """
-        prices      = {}
         open_trades = self.db.get_open_trades()
         if not open_trades:
-            return prices  # nothing open → nothing to fetch
+            return {}
 
-        if self.order_mgr.dhan:
-            try:
-                for t in open_trades:
-                    sym   = t["symbol"]
-                    quote = self.order_mgr.dhan.get_market_feed_quote(
-                        security_id=self.order_mgr._get_security_id(sym),
-                        exchange_segment="NSE_EQ"
-                    )
-                    if quote and "data" in quote:
-                        # Use live LTP if available, fall back to last stored current_price
-                        prices[sym] = float(quote["data"].get("ltp", t["current_price"]))
-                    else:
-                        # Quote response malformed — use last known price from DB
-                        prices[sym] = t["current_price"] or t["entry_price"]
-            except Exception as e:
-                log.error(f"Price fetch failed: {e}")
-                # On exception, use last known prices so monitoring cycle still runs
-                for t in open_trades:
-                    prices[t["symbol"]] = t["current_price"] or t["entry_price"]
-        else:
-            # Dhan not connected — use last known price (no random simulation)
-            for t in open_trades:
-                prices[t["symbol"]] = t["current_price"] or t["entry_price"]
-            log.warning("Dhan not connected — using last known prices, monitoring may be stale")
+        open_symbols = [t["symbol"] for t in open_trades]
+
+        # Single batch call — all open symbols in one API request
+        live = self.order_mgr.get_all_live_prices(open_symbols)
+
+        prices = {}
+        for t in open_trades:
+            sym = t["symbol"]
+            if sym in live:
+                prices[sym] = live[sym]
+            else:
+                # Upstox couldn't return this price — use last known from DB
+                fallback = t["current_price"] or t["entry_price"]
+                prices[sym] = fallback
+                log.warning(f"Live price unavailable for {sym} — using last known ₹{fallback:.2f}")
 
         return prices
 

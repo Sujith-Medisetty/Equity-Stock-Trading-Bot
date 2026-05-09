@@ -153,7 +153,7 @@ class RiskManager:
         if capital_needed < Config.MIN_POSITION_VALUE:
             setup.skip_reason = (
                 f"Position too small: ₹{capital_needed:.0f} < MIN_POSITION_VALUE ₹{Config.MIN_POSITION_VALUE:,} "
-                f"— Dhan fixed charges would eat into profit"
+                f"— fixed charges would eat into profit"
             )
             setup.status = "SKIPPED"
             return setup

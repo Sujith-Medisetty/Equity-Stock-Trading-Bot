@@ -1,0 +1,9 @@
+upstox-python-sdk
+upstox-totp
+pandas
+numpy
+requests
+pyotp
+schedule
+pnsea
+pydantic

@@ -189,11 +189,17 @@ class ProtectionEngine:
     def check_event_guard(self, symbol: str) -> tuple:
         """
         Checks for upcoming earnings/results for this symbol.
-        Returns (safe: bool, message: str).
-        - days <= EVENT_EXIT_DAYS (5): (False, "Exit! ...") — trade should be closed
-        - days <= 10: (True, "Warning: ...") — hold but monitor closely
-        - far away: (True, "Event far away, safe to hold")
-        Called every 15 mins by TradeMonitor for each open position.
+        Returns (action: str, message: str) where action is one of:
+          "SAFE"    → no event or event far away — hold normally
+          "WARN"    → event within 10 days — log, no action required yet
+          "TIGHTEN" → event within 5 days — tighten SL to breakeven (or exit if already at a loss)
+          "EXIT"    → event within 2 days — force exit unconditionally, too close to hold through
+
+        Why staged instead of immediate exit at 5 days?
+        At 5 days we still have time — dumping the position immediately at whatever the
+        current price is could lock in a worse loss than waiting for price to recover
+        or at least tightening the SL to limit downside. Only at 2 days is the gap risk
+        (earnings can move ±10% overnight) too large to justify holding any longer.
         """
         # Find the nearest upcoming event for this symbol (by days_away ascending)
         event = self.db.fetchone(
@@ -201,19 +207,25 @@ class ProtectionEngine:
             (symbol,)
         )
         if not event:
-            return True, "No upcoming events"  # nothing in the calendar — safe to hold
+            return "SAFE", "No upcoming events"
 
         days = event["days_away"]
 
+        if days <= Config.EVENT_FORCE_EXIT_DAYS:
+            # 2 days or less — gap risk is now too large. Force exit immediately regardless of P&L.
+            # Earnings can open ±10% against us with no time to react.
+            return "EXIT", f"Force exit — {event['event_type']} in {days} day(s)"
+
         if days <= Config.EVENT_EXIT_DAYS:
-            # Event is imminent (within 5 days) — exit the trade NOW.
-            # Earnings/results can gap ±10% overnight. Our SL cannot protect against overnight gaps.
-            return False, f"Exit! {event['event_type']} in {days} days"
+            # 3–5 days away — tighten SL to breakeven (entry price).
+            # If trade is already at a loss, monitor.py will exit it.
+            # If trade is in profit, worst case becomes zero loss from here.
+            return "TIGHTEN", f"{event['event_type']} in {days} days — tightening SL"
 
-        if days <= 10:
-            # Event is coming soon but not imminent — keep the trade but monitor closely.
-            # If the stock starts weakening, that's an early warning and a good time to exit.
-            return True, f"Warning: {event['event_type']} in {days} days"
+        if days <= Config.EVENT_WARN_DAYS:
+            # 6–10 days away — log a warning but no mechanical action yet.
+            # Monitor for weakness; the tighten/exit tiers will fire as we get closer.
+            return "WARN", f"Warning: {event['event_type']} in {days} days"
 
-        # Event is far enough away to not be a concern for a swing trade (5-15 day hold)
-        return True, "Event far away, safe to hold"
+        # Event is far enough away to not be a concern for a swing trade
+        return "SAFE", "Event far away, safe to hold"
