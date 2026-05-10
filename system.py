@@ -91,6 +91,14 @@ class TradingSystem:
         self.todays_setups     = []                       # all Setup objects from step4, used in morning briefing
         self.available_capital = float(Config.TOTAL_CAPITAL)  # refreshed from Upstox fund limits in step1
 
+        # Pending watchlist for PULLBACK and BREAKOUT confirmation.
+        # A setup is added here on the first cycle it qualifies.
+        # It is only entered on the NEXT cycle if still valid (15-min confirmation).
+        # This avoids entering on a momentary spike — requires the setup to hold for one full cycle.
+        # Format: {symbol: {"strategy": str, "since": datetime}}
+        # Cleared at end of day (step7) so it starts fresh each morning.
+        self.pending_watchlist: dict = {}
+
         # On startup: immediately reconcile DB against actual Upstox holdings.
         # Catches any SL orders the broker executed since last run (overnight, weekend).
         # Without this, the DB would still show those trades as OPEN — causing screener
@@ -109,8 +117,14 @@ class TradingSystem:
     def step1_collect_data(self):
         log.info("STEP 1: Collecting market data...")
 
+        # Once-a-day stale-trade exit (>15 days held without profit).
+        # Uses date arithmetic only — running this every 15 min during the day
+        # would re-evaluate the same value 26 times. Pre-market exits queue at
+        # the broker and fill in the opening auction.
+        self.monitor.check_stale_trades()
+
         # --- Market-wide signals ---
-        self.vix     = self.collector.fetch_india_vix()    # India VIX — fear index. >=28 → CASH mode, >=22 → DEFENSIVE
+        self.vix     = self.collector.fetch_india_vix()    # India VIX — fear index. >=29 → CASH mode, >=25 → DEFENSIVE / tighten SLs
         fii_data     = self.collector.fetch_fii_dii()      # today's FII + DII net buying from NSE API
         self.fii_net = fii_data.get("fii_net_cash", 0.0)  # positive = FII buying, negative = selling
 
@@ -337,7 +351,24 @@ class TradingSystem:
             )
             return
 
+        # --- Pending watchlist: expire stale candidates ---
+        # A candidate that hasn't re-qualified within 45 minutes is dropped.
+        # This prevents acting on a setup that was valid once but drifted away.
+        stale = [k for k, v in self.pending_watchlist.items()
+                 if (datetime.now() - v["since"]).total_seconds() > 2700]
+        for k in stale:
+            log.info(f"WATCHLIST EXPIRE: {k} ({self.pending_watchlist[k]['strategy']}) — "
+                     f"setup not confirmed within 45 min, dropping")
+            del self.pending_watchlist[k]
+
         open_trades = list(self.db.get_open_trades())  # current holdings — used to check position count and portfolio risk
+
+        # Strategies that require a 15-min confirmation before entry.
+        # On the first cycle a setup qualifies: add to watchlist, don't enter.
+        # On the next cycle (15 min later), if still valid: enter.
+        # In BACKTEST_MODE we skip this — backtests run one cycle per "day" so
+        # a two-cycle confirmation would block all PULLBACK/BREAKOUT entries.
+        CONFIRM_STRATEGIES = {"PULLBACK", "BREAKOUT"}
 
         for setup in setups:
             # Stop if we've hit the maximum allowed concurrent positions.
@@ -348,6 +379,27 @@ class TradingSystem:
             # Minimum score gate: anything below 60 is too low-confidence to enter.
             if setup.score < 60:
                 continue
+
+            # --- 15-min confirmation gate for PULLBACK and BREAKOUT ---
+            strategy_name = setup.strategy.value if setup.strategy else ""
+            if strategy_name in CONFIRM_STRATEGIES and not Config.BACKTEST_MODE:
+                if setup.symbol not in self.pending_watchlist:
+                    # First time this setup qualifies — add to watchlist, wait for next cycle.
+                    # A real PULLBACK or BREAKOUT holds for at least 15 minutes.
+                    # A momentary price spike that immediately reverses won't survive confirmation.
+                    self.pending_watchlist[setup.symbol] = {
+                        "strategy": strategy_name,
+                        "since": datetime.now(),
+                    }
+                    log.info(f"WATCHLIST ADD: {setup.symbol} {strategy_name} score:{setup.score} "
+                             f"— waiting 15-min confirmation before entry")
+                    continue  # do NOT enter this cycle
+                else:
+                    # Already in watchlist from a previous cycle — setup held for ≥15 min, confirmed.
+                    age_mins = (datetime.now() - self.pending_watchlist[setup.symbol]["since"]).total_seconds() / 60
+                    log.info(f"WATCHLIST CONFIRMED: {setup.symbol} {strategy_name} "
+                             f"held for {age_mins:.0f} min — proceeding to entry")
+                    del self.pending_watchlist[setup.symbol]  # remove; order placement follows below
 
             # --- Live price validation ---
             # setup.entry_price was set to yesterday's close during step4 (8:45 AM data).
@@ -619,6 +671,12 @@ class TradingSystem:
     def step7_end_of_day(self):
         log.info("STEP 7: End of day tasks...")
 
+        # Clear the pending watchlist — any unconfirmed setups from today are stale.
+        # Tomorrow morning's scan will re-identify candidates fresh from new data.
+        if self.pending_watchlist:
+            log.info(f"Clearing {len(self.pending_watchlist)} unconfirmed watchlist entries at EOD")
+            self.pending_watchlist.clear()
+
         # Print the full dashboard: today's closed trades, open positions, monthly stats,
         # strategy breakdown, and tax estimate for the current financial year.
         self.analytics.print_dashboard(self.available_capital)
@@ -693,9 +751,8 @@ class TradingSystem:
                 )
             )
             getattr(schedule.every(), day).at("09:15").do(self.step8_morning_briefing)
-            getattr(schedule.every(), day).at("11:30").do(self.run_midday_scan)   # midday check 1
-            getattr(schedule.every(), day).at("13:30").do(self.run_midday_scan)   # midday check 2
             getattr(schedule.every(), day).at("15:35").do(self.step7_end_of_day)  # 5 min after market close
+            # run_midday_scan removed from fixed slots — now fires every 15 mins via _conditional_monitor
 
         # Monitoring fires every 15 minutes all day, but _conditional_monitor()
         # checks if it's a weekday and within market hours before actually running.
@@ -714,15 +771,26 @@ class TradingSystem:
 
     def _conditional_monitor(self):
         """
-        Guards the monitoring cycle: only runs step6 if it's a weekday
-        and within market hours (9:15 + 15 min wait → 9:30 AM to 3:30 PM).
-        The 15-min wait after open avoids the chaotic opening auction period.
+        Fires every 15 mins. Does two things if it's a weekday:
+        1. step6_monitor_trades — checks exits + trailing SL for all open trades (9:15 AM – 3:30 PM)
+        2. run_midday_scan     — scans for NEW entries with live prices (9:30 AM – 1:30 PM)
+           The 9:30 AM start avoids opening auction noise.
+           The 1:30 PM cutoff stops new entries with insufficient time left in the day.
         """
         now = datetime.now()
-        if now.weekday() >= 5:  # 5=Saturday, 6=Sunday — skip weekends
+        if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
             return
-        if now.replace(hour=9, minute=15) <= now <= now.replace(hour=15, minute=30):
+
+        market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        entry_start  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+        entry_cutoff = now.replace(hour=13, minute=30, second=0, microsecond=0)
+
+        if market_open <= now <= market_close:
             self.step6_monitor_trades()
+
+        if entry_start <= now <= entry_cutoff:
+            self.run_midday_scan()
 
     def _weekly_review(self):
         """

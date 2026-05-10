@@ -116,6 +116,17 @@ class StockScreener:
             if market_mode in [MarketMode.DEFENSIVE, MarketMode.CASH]:
                 reasons.append("Market in defensive/cash mode")
 
+            # --- Filter 7: FVG zone avoidance ---
+            # Price inside a RECENT unfilled bullish FVG (formed in last 10 candles).
+            # The market is actively filling an imbalance — direction uncertain for most strategies.
+            # NOTE: PULLBACK inside an FVG is actually GOOD confluence (price pulled back to
+            # institutional order zone). So we pass FVG stocks through here and let
+            # strategy.py block non-PULLBACK strategies. The flag is logged but not a hard block.
+            # This keeps the screener as a coarse pre-filter; strategy.py is the fine filter.
+            if data.in_fvg_zone:
+                log.debug(f"FVG NOTE {symbol}: price inside recent unfilled FVG — "
+                          "only PULLBACK strategy valid here, others blocked in strategy.py")
+
             if reasons:
                 # Log all reasons at DEBUG level — won't clutter normal output
                 # but available if you run with --debug to understand why stocks were skipped

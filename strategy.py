@@ -1,17 +1,11 @@
 """
-strategy.py — The 5 entry strategies and their scoring system.
+strategy.py — The 4 entry strategies and their scoring system.
 
 Each strategy is a set of conditions that must ALL (or nearly all) be true
 before a Setup is created. After that, RiskManager sizes the position and
 validates the risk:reward ratio. Only setups that clear both layers get traded.
 
-The 5 strategies in priority order (highest to lowest):
-
-FII_FLOW (priority 5)
-  Strongest edge. Requires FII consistently buying in this stock's sector AND
-  the stock itself is outperforming Nifty. When institutions put thousands of crores
-  into a sector, individual stocks ride the wave regardless of technicals.
-  Only works in NORMAL or AGGRESSIVE market mode.
+The 4 strategies in priority order (highest to lowest):
 
 WEEK52 (priority 4)
   52-week high breakout. Rare but powerful — when a stock hits a new 52W high
@@ -24,18 +18,26 @@ BREAKOUT (priority 3)
   with 2x+ volume. The tight range shows supply/demand in balance; the volume
   spike on the break shows buyers winning the standoff. Works in most modes
   except DEFENSIVE and CASH.
+  FII sector buying in BREAKOUT stock's sector → +15 score bonus.
 
 PULLBACK (priority 2)
   Price pulling back to the 20 EMA in an established uptrend and bouncing.
   The pullback is the second-best risk:reward entry in a trend — you're buying
   closer to support (the EMA) with the trend already confirmed above you.
   NORMAL and AGGRESSIVE mode only.
+  FII sector buying in PULLBACK stock's sector → +15 score bonus.
 
 SWING (priority 1)
   General trend-following when multiple timeframes align. All EMAs stacked
   (close > EMA20 > EMA50), RSI in the healthy 45-65 zone, MACD positive,
   and at least 2 of 3 timeframes (weekly/daily/4H) bullish.
+  No entries before 10 AM — opening noise settles first.
   The baseline strategy — works whenever markets are not in a downtrend.
+
+FII sector buying is NOT a standalone strategy. It is a +15 score modifier
+applied inside PULLBACK and BREAKOUT when FII is buying in the stock's sector.
+This avoids the "wait for dip" problem of a standalone FII strategy, and lets
+the cleaner PULLBACK/BREAKOUT logic handle the actual entry gate.
 
 Scoring (0-100):
   70% from how many of the strategy's criteria passed
@@ -43,7 +45,7 @@ Scoring (0-100):
   15% from candle pattern quality (MARUBOZU, BULLISH_ENGULFING, etc.)
   Minimum to enter: 60. High confidence: 80+.
 
-evaluate_all() runs all 5 strategies on a stock and picks the highest-priority
+evaluate_all() runs all 4 strategies on a stock and picks the highest-priority
 one with the highest score. One setup per stock per day maximum.
 """
 
@@ -51,7 +53,7 @@ from datetime import datetime
 from typing import Optional
 
 from config import Config, log
-from models import MarketMode, FIIFlow, StrategyType, StockData, Setup
+from models import MarketMode, FIIFlow, StrategyType, StockData, Setup  # FIIFlow kept for fii_flow param typing
 
 
 class StrategyEngine:
@@ -72,13 +74,13 @@ class StrategyEngine:
         """
         candidates = []
 
-        # Run all 5 checks. Each returns a Setup object if the strategy qualifies,
+        # Run all 4 checks. Each returns a Setup object if the strategy qualifies,
         # or None if the stock doesn't meet the criteria.
+        # fii_sector_buying is passed to PULLBACK and BREAKOUT as a score modifier (+15).
         for check in [
-            self._check_fii_flow(symbol, data, market_mode, fii_flow, fii_sector_buying),
             self._check_52w_breakout(symbol, data, market_mode),
-            self._check_breakout(symbol, data, market_mode),
-            self._check_pullback(symbol, data, market_mode),
+            self._check_breakout(symbol, data, market_mode, fii_sector_buying),
+            self._check_pullback(symbol, data, market_mode, fii_sector_buying),
             self._check_swing(symbol, data, market_mode),
         ]:
             if check:
@@ -109,6 +111,14 @@ class StrategyEngine:
         # SWING only works in uptrend market conditions — no use trend-following in a sideways/bear market
         if mode not in [MarketMode.NORMAL, MarketMode.AGGRESSIVE]:
             return None
+        # No new SWING entries before 10 AM — opening auction creates false signals.
+        # By 10 AM the direction is confirmed and price has found its intraday level.
+        if datetime.now().hour < 10:
+            return None
+        # FVG avoidance: price inside a recent unfilled gap = uncertain direction.
+        # SWING needs clean trend momentum — entering mid-gap is low confidence.
+        if data.in_fvg_zone:
+            return None
 
         checks = [
             data.close > data.ema_20,          # price above short-term trend line
@@ -129,16 +139,21 @@ class StrategyEngine:
                      strategy=StrategyType.SWING, score=self._score(data, checks),
                      entry_price=data.close, market_mode=mode.value, fii_flow="")
 
-    def _check_breakout(self, symbol, data, mode):
+    def _check_breakout(self, symbol, data, mode, fii_sector_buying: bool = False):
         """
         Breakout from tight consolidation. Hard gate: volume_ratio < 2.0 → skip
         immediately (no point scoring a breakout without the volume confirmation).
         consolidation_range_pct < 8%: the 20-day high-low range is < 8% of price.
         Tight coiling before the break is the setup. A 2.5x volume bonus adds 10
         extra score points — explosive volume on a breakout is a very strong signal.
+        FII sector buying adds +10: institutional tailwind behind the breakout = higher continuation.
         """
         # BREAKOUT doesn't work in DEFENSIVE/CASH — no upward momentum in those regimes
         if mode in [MarketMode.DEFENSIVE, MarketMode.CASH]:
+            return None
+        # FVG avoidance: a breakout starting inside an FVG zone is suspect —
+        # price may just be oscillating within the imbalance, not truly breaking out.
+        if data.in_fvg_zone:
             return None
 
         # Hard gate: without 2x volume, the "breakout" is likely a false move.
@@ -165,32 +180,45 @@ class StrategyEngine:
         # Explosive volume (2.5x+) on a breakout is a very strong signal — give bonus points.
         # The extra 10 points can push a 70-score setup to 80 (high-confidence tier).
         if data.volume_ratio > 2.5:
-            score = min(100, score + 10)  # cap at 100
+            score = min(100, score + 10)
+
+        # FII sector buying: institutions accumulating in this sector behind the breakout.
+        # Sector tailwind makes continuation far more likely than a standalone technical breakout.
+        if fii_sector_buying:
+            score = min(100, score + 15)
 
         return Setup(symbol=symbol, date=datetime.now().strftime("%Y-%m-%d"),
                      strategy=StrategyType.BREAKOUT, score=score,
                      entry_price=data.close, market_mode=mode.value, fii_flow="")
 
-    def _check_pullback(self, symbol, data, mode):
+    def _check_pullback(self, symbol, data, mode, fii_sector_buying: bool = False):
         """
-        Pullback to 20 EMA in an uptrend. Hard gate: price must be within 0.5% of
-        EMA20 — any further away and it's not actually a clean pullback touch.
+        Pullback to 20 EMA in an uptrend. Hard gate: price must be within 0.3 × ATR of
+        EMA20. Fixed % gates are too tight for high-ATR stocks (e.g. RELIANCE) and too
+        loose for low-ATR stocks — ATR-scaled zone adapts to each stock's volatility.
         RSI 40-52: momentum has cooled but not broken (< 40 = actual breakdown).
         Low volume (< 1.5x avg) on the pullback confirms it's consolidation, not
         distribution. A HAMMER or BULLISH_ENGULFING candle at this level is a
         strong reversal signal → +15 bonus score.
+        FII sector buying adds +15: pullback into EMA20 in a sector with institutional
+        buying = two reasons to bounce (technical support + institutional demand).
         """
         # PULLBACK needs a confirmed uptrend to pull back in — not valid in SELECTIVE/CAUTIOUS/DEFENSIVE
         if mode not in [MarketMode.NORMAL, MarketMode.AGGRESSIVE]:
             return None
+        # NOTE: FVG avoidance does NOT apply to PULLBACK.
+        # A pullback into a bullish FVG zone is the textbook high-confluence entry —
+        # two reasons to bounce: EMA20 support AND unfilled institutional orders.
+        # We handle this below by upgrading the score (+10) instead of blocking.
 
         # Guard: if EMA20 is zero, the indicator didn't calculate properly — skip
         if data.ema_20 == 0:
             return None
 
-        # Hard gate: price must be very close to EMA20 (within 0.5%).
-        # This is the "touching the EMA" condition. If price is 2% above EMA20, it's not a pullback.
-        if abs(data.close - data.ema_20) / data.ema_20 * 100 > 0.5:
+        # Hard gate: price must be within 0.3 × ATR of EMA20.
+        # ATR-scaled zone adapts per stock — wider for volatile stocks, tighter for calm ones.
+        # A real pullback bounce closes within this band: the low touched EMA20, close bounced above it.
+        if data.atr > 0 and abs(data.close - data.ema_20) > 0.3 * data.atr:
             return None
 
         checks = [
@@ -213,49 +241,20 @@ class StrategyEngine:
         if data.candle_pattern in ["HAMMER", "BULLISH_ENGULFING"]:
             score = min(100, score + 15)  # add 15 points, cap at 100
 
+        # FVG confluence upgrade: pullback landed inside an unfilled bullish FVG zone.
+        # Two structural reasons to bounce here: EMA20 support + institutional unfilled orders.
+        # This is the OTE (Optimal Trade Entry) concept from SMC — highest-confidence pullback entry.
+        if data.fvg_pullback:
+            score = min(100, score + 10)
+
+        # FII sector buying: institutions actively buying in this sector makes a pullback
+        # to EMA20 even more compelling — the dip is being bought by smart money.
+        if fii_sector_buying:
+            score = min(100, score + 15)
+
         return Setup(symbol=symbol, date=datetime.now().strftime("%Y-%m-%d"),
                      strategy=StrategyType.PULLBACK, score=score,
                      entry_price=data.close, market_mode=mode.value, fii_flow="")
-
-    def _check_fii_flow(self, symbol, data, mode, fii_flow, fii_sector_buying):
-        """
-        FII tailwind play. Requires two conditions before any technical checks:
-        1. fii_flow == BUYING: FIIs have been buying for 3+ consecutive days above ₹2000 Cr.
-        2. fii_sector_buying: this stock's sector is receiving FII inflows
-           (determined by rs_score > 3 for stocks in that sector).
-        RS score > 0 check: the stock itself must be outperforming Nifty — FII flow into
-        a sector doesn't help if the specific stock is an underperformer within it.
-        Gets a flat +10 bonus because institutional tailwind is the strongest edge we track.
-        """
-        # FII_FLOW only valid when market is in an uptrend — institutions don't create trends in bear markets
-        if mode not in [MarketMode.NORMAL, MarketMode.AGGRESSIVE]:
-            return None
-
-        # Both conditions must be true: FII must be buying AND specifically into this stock's sector.
-        # If FII is buying in banking but not IT, IT stocks don't qualify even if the stock looks good.
-        if fii_flow != FIIFlow.BUYING or not fii_sector_buying:
-            return None
-
-        checks = [
-            data.close > data.ema_50,          # price above medium-term trend — riding the institutional wave
-            50 <= data.rsi <= 70,              # RSI in bullish zone: above neutral, not overbought
-            data.volume_ratio > 1.2,           # volume confirming FII activity visible in the stock
-            data.obv_rising,                   # OBV rising = net accumulation by institutions
-            data.rs_score > 0,                 # THIS stock outperforming Nifty (not just its sector)
-            data.macd > data.macd_signal,      # MACD momentum also agreeing
-            data.tf_aligned_count >= 2,        # multiple timeframes aligned
-        ]
-
-        if sum(checks) < 6:
-            return None
-
-        # +10 flat bonus because institutional tailwind is the highest-conviction edge in this system.
-        # A stock with FII behind it and all technicals aligned is the highest-probability setup.
-        score = min(100, self._score(data, checks) + 10)
-
-        return Setup(symbol=symbol, date=datetime.now().strftime("%Y-%m-%d"),
-                     strategy=StrategyType.FII_FLOW, score=score,
-                     entry_price=data.close, market_mode=mode.value, fii_flow=fii_flow.value)
 
     def _check_52w_breakout(self, symbol, data, mode):
         """
@@ -271,6 +270,10 @@ class StrategyEngine:
         if mode != MarketMode.AGGRESSIVE:
             return None
 
+        # FVG avoidance: a 52W breakout starting inside a recent FVG is almost always a
+        # stop-hunt (false breakout) — institutions sweep highs then reverse to fill the gap.
+        if data.in_fvg_zone:
+            return None
         # Hard gate 1: price must actually be at or above the 52W high.
         # week_52_high == 0 means data was insufficient to calculate it — skip.
         if data.week_52_high == 0 or data.close < data.week_52_high:

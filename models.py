@@ -54,17 +54,19 @@ class FIIFlow(Enum):
 
 class StrategyType(Enum):
     """
-    The 5 entry strategies, in priority order (highest first):
-    FII_FLOW  → Stock in sector with active FII buying
+    The 4 entry strategies, in priority order (highest first):
     WEEK52    → Stock breaking out of 52-week high (only in AGGRESSIVE mode)
     BREAKOUT  → Stock breaking out of consolidation with 2x+ volume
     PULLBACK  → Stock pulling back to 20 EMA in an uptrend
     SWING     → General trend-following on multi-timeframe alignment
+
+    FII sector buying is no longer a standalone strategy — it is a score
+    modifier (+15) applied on top of PULLBACK and BREAKOUT when FII is
+    actively buying in the stock's sector.
     """
     SWING    = "SWING"
     BREAKOUT = "BREAKOUT"
     PULLBACK = "PULLBACK"
-    FII_FLOW = "FII_FLOW"
     WEEK52   = "WEEK52"
 
 
@@ -150,6 +152,11 @@ class StockData:
     consolidation_range_pct: float = 999.0
     obv_rising:              bool  = False
     atr_ratio:               float = 1.0
+
+    # FVG (Fair Value Gap) fields — computed by IndicatorEngine, used by screener + strategy + risk
+    in_fvg_zone:  bool  = False  # price inside a RECENT unfilled bullish FVG (≤10 days old) → screener blocks entry
+    fvg_pullback: bool  = False  # price inside ANY unfilled bullish FVG → PULLBACK score +10
+    fvg_target:   float = 0.0   # bottom of nearest unfilled bullish FVG above price (within 8%) → target override
 
 
 @dataclass

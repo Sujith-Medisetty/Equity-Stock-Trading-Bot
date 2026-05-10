@@ -14,15 +14,21 @@ It does four things on each cycle:
    Skipped in paper mode (no real broker holdings to compare against).
 
 2. Exit condition checks (_check_exit_conditions)
-   Evaluates four exit triggers each cycle:
+   Evaluates three exit triggers each cycle:
    a) SL hit — paper mode only. In live mode, the broker's SL order handles this.
       We never manually sell in live mode because the broker already sold us out.
-   b) VIX spike — if VIX crosses the nervous threshold (22), exit immediately
-      regardless of position profit. Market chaos makes all setups invalid.
-   c) Time-based exit — if a trade is open for 15+ days without profit, exit.
-      Dead money: capital tied up in a trade going nowhere could be redeployed.
-   d) Event guard — if an earnings/results event is within 5 days, exit.
+   b) VIX response — staged by severity:
+        VIX > 29 (PANIC)   → full market exit, real crash territory.
+        VIX > 25 (NERVOUS) → tighten trailing SL to (price - 0.5×ATR).
+                              Never widens — only moves SL up if tighter than current.
+                              Lets winners run, just protects downside more aggressively.
+                              Same threshold also blocks new entries via market_mode + risk checklist.
+   c) Event guard — if an earnings/results event is within 5 days, exit / tighten.
       We don't hold through results — gap risk is too high for swing size positions.
+
+   Time-based exit (>15 days without profit) is NOT here. It runs once a day in
+   step1 via check_stale_trades() — the value only ticks over at midnight, so
+   there is no point re-evaluating it every 15 min during the session.
 
 3. Trailing SL updates (_update_trailing_sl)
    3-tier system that locks in progressively more profit as the trade works:
@@ -228,6 +234,40 @@ class TradeMonitor:
                 self.db.update_sl_order_id(trade["trade_id"], new_id)
                 log.info(f"SYNC → {symbol} SL order re-placed @ ₹{sl:.2f} | id: {new_id}")
 
+    def check_stale_trades(self):
+        """
+        Once-a-day stale-trade exit check. Called from step1 (pre-market).
+
+        Why this isn't in monitor_all_trades():
+          holding_days = (today - entry_date).days only ticks over at midnight.
+          Running it every 15 min during the trading day is redundant work — the
+          value is identical for all 26 cycles of a single session. One check at
+          start of day is logically equivalent and cleaner.
+
+          Uses trade["current_price"] (last value written by yesterday's final
+          monitor cycle) as the in-profit gate. For a 15-day-old trade, an
+          overnight gap doesn't change the dead-money decision.
+
+        Exits any trade where: holding_days >= 15 AND last_price <= entry.
+        Winners (in profit) are left alone — let them run.
+        Pre-market exits queue at the broker and execute in the opening auction.
+        """
+        for trade in self.db.get_open_trades():
+            entry_date   = datetime.strptime(trade["entry_date"], "%Y-%m-%d")
+            holding_days = (datetime.now() - entry_date).days
+            if holding_days < Config.MAX_HOLD_DAYS:
+                continue
+
+            # Use last-known price from DB (updated by yesterday's last monitor cycle).
+            # Falls back to entry price if current_price is missing — treats as flat → exits.
+            price = trade.get("current_price") or trade["entry_price"]
+            if price > trade["entry_price"]:
+                continue  # in profit — let it run
+
+            log.info(f"TIME EXIT (start-of-day): {trade['symbol']} held {holding_days} days "
+                     f"without profit (last ₹{price:.2f} ≤ entry ₹{trade['entry_price']:.2f})")
+            self._execute_exit(trade, price, trade["remaining_qty"], ExitReason.TIME_BASED.value)
+
     def monitor_all_trades(self, current_prices: dict, vix: float):
         """
         Main monitoring loop called every 15 mins from step6_monitor_trades().
@@ -281,27 +321,36 @@ class TradeMonitor:
             self.protection.start_loss_cooldown()  # 2-hour pause after a loss
             return  # return immediately — no point checking other conditions on a closed trade
 
-        # --- Exit 2: VIX spike ---
-        # If VIX crosses 22 (VIX_NERVOUS threshold), market conditions have deteriorated sharply.
-        # All open positions are exited immediately regardless of profit — chaos makes SLs unreliable.
-        if vix > Config.VIX_NERVOUS:
-            log.warning(f"VIX SPIKE EXIT: {symbol} | VIX: {vix:.1f}")
+        # --- Exit 2: VIX-driven response (staged) ---
+        # Two thresholds, very different actions:
+        #   VIX > 29 (PANIC)   → full market exit. Real crash territory; SLs unreliable.
+        #   VIX > 25 (NERVOUS) → tighten trailing SL to (price - 0.5×ATR), don't exit.
+        #                        Lets winners keep running while protecting downside.
+        #                        Only TIGHTENS — never widens an existing SL.
+        # The same VIX_NERVOUS threshold also drives mode detection (no new entries)
+        # and the pre-trade checklist gate — open trades get protected here, no new
+        # ones get opened elsewhere.
+        if vix > Config.VIX_PANIC:
+            log.warning(f"VIX PANIC EXIT: {symbol} | VIX: {vix:.1f}")
             self._execute_exit(trade, price, qty, ExitReason.MARKET_CRASH.value)
             return
 
-        # --- Exit 3: Time-based exit ---
-        # If a trade has been open for MAX_HOLD_DAYS (15 days) and is NOT showing a profit,
-        # it's "dead money" — capital tied up in a trade going nowhere.
-        # We exit to free up capital for better opportunities.
-        # Note: we DON'T exit if the trade is in profit (even after 15 days) — let winners run.
-        entry_date   = datetime.strptime(trade["entry_date"], "%Y-%m-%d")
-        holding_days = (datetime.now() - entry_date).days
-        if holding_days >= Config.MAX_HOLD_DAYS and price <= entry:
-            log.info(f"TIME EXIT: {symbol} held {holding_days} days without profit")
-            self._execute_exit(trade, price, qty, ExitReason.TIME_BASED.value)
-            return
+        if vix > Config.VIX_NERVOUS:
+            atr = self._get_atr(symbol)
+            if atr > 0:
+                tightened = round(price - (atr * 0.5), 2)
+                # Never widen — only move SL up if the new level is tighter than the current SL.
+                if tightened > sl:
+                    log.info(f"VIX TIGHTEN: {symbol} | VIX: {vix:.1f} | "
+                             f"SL ₹{sl:.2f} → ₹{tightened:.2f} (price ₹{price:.2f} - 0.5×ATR ₹{atr:.2f})")
+                    self.db.update_trade_sl(trade_id, tightened)
+                    self.db.log_trailing_sl(trade_id, sl, tightened, price, "VIX_TIGHTEN")
+                    new_id = self.order_mgr.replace_sl_order_safe(symbol, qty, tightened, trade["sl_order_id"])
+                    if new_id:
+                        self.db.update_sl_order_id(trade_id, new_id)
+            # Fall through — event guard below still applies even during anxiety.
 
-        # --- Exit 4: Upcoming earnings/results event (staged response) ---
+        # --- Exit 3: Upcoming earnings/results event (staged response) ---
         # Three levels of response depending on how close the event is:
         #   EXIT    (≤2 days) → force exit now, gap risk too high to hold through
         #   TIGHTEN (≤5 days) → move SL up to entry price (breakeven)
@@ -410,14 +459,17 @@ class TradeMonitor:
             exit_qty  = max(1, qty // 2)    # sell half, minimum 1 share
             remaining = qty - exit_qty       # shares that stay in the position
 
-            # Before selling, check if the partial exit is profitable after charges.
-            # The DP charge (₹15.34 flat) on a tiny partial sell can make it net-negative.
+            # Before selling, check if the partial exit nets at least ₹100 after charges + STCG tax (20%).
+            # Below that threshold, the paperwork and tax cost more than the benefit.
             partial_pnl = ChargesCalculator.calculate_trade_pnl(entry, price, exit_qty)
-            if partial_pnl["net_pnl"] <= 0:
-                # Partial sell would be a net loss after charges — skip the sell,
-                # but still mark tier2 done and start trailing with 1×ATR.
+            gross_gain   = (price - entry) * exit_qty
+            stcg_tax     = gross_gain * 0.20  # STCG 20% on equity held < 12 months
+            net_after_tax = partial_pnl["net_pnl"] - stcg_tax
+            if net_after_tax < 100:
+                # Partial sell nets less than ₹100 after charges + tax — not worth it.
+                # Skip the sell, keep full qty, trail with 1×ATR instead.
                 log.info(f"TIER 2 SKIP: {trade['symbol']} partial sell of {exit_qty} shares "
-                         f"not profitable after charges (net ₹{partial_pnl['net_pnl']:.2f}). "
+                         f"nets only ₹{net_after_tax:.2f} after charges+tax. "
                          f"Trailing full qty instead.")
                 new_trail_sl = price - atr  # trail 1×ATR below current price with full qty
                 if new_trail_sl > sl:

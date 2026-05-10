@@ -131,6 +131,20 @@ class RiskManager:
         # At min R:R of 2.0: if we risk ₹10/share, we target ₹20/share profit.
         target = entry + (risk_per_share * Config.MIN_RR_RATIO)
 
+        # FVG target override for SWING and PULLBACK:
+        # If there's an unfilled bullish FVG above price (within 8%), its bottom is a
+        # natural magnet — institutions left orders there. Use it as target if it gives
+        # better R:R than the standard 2×ATR target AND still meets the 2:1 minimum.
+        if (setup.strategy in (StrategyType.PULLBACK, StrategyType.SWING) and
+                stock_data.fvg_target > entry):
+            fvg_rr = (stock_data.fvg_target - entry) / risk_per_share
+            if fvg_rr >= Config.MIN_RR_RATIO and stock_data.fvg_target > target:
+                log.info(
+                    f"{setup.symbol}: FVG target ₹{stock_data.fvg_target:.2f} used "
+                    f"(R:R {fvg_rr:.1f}:1 vs standard {(target - entry) / risk_per_share:.1f}:1)"
+                )
+                target = stock_data.fvg_target
+
         # Share count: how many shares can we buy so that if SL hits, we lose exactly max_risk?
         # Formula: shares = max_risk / risk_per_share
         # e.g. max_risk=₹1500, risk_per_share=₹15 → 100 shares

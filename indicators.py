@@ -250,6 +250,32 @@ class IndicatorEngine:
             # Rising OBV = net institutional accumulation over the past week
             obv_rising = len(df) >= 5 and bool(df["obv"].iloc[-1] > df["obv"].iloc[-5])
 
+            # --- FVG (Fair Value Gap) zones ---
+            current_close = float(last["close"])
+            fvg_zones     = IndicatorEngine._detect_fvg_zones(df)
+
+            # Use Case 1: price inside a RECENT FVG (≤10 candles old) = uncertain zone
+            # The market is actively filling a fresh imbalance → screener blocks entry
+            in_fvg_zone = any(
+                z["bottom"] <= current_close <= z["top"] and z["age"] <= 10
+                for z in fvg_zones
+            )
+
+            # Use Case 2: price inside ANY unfilled bullish FVG (any age)
+            # When PULLBACK fires here, it's extra confluence → score +10 in strategy.py
+            fvg_pullback = any(
+                z["bottom"] <= current_close <= z["top"]
+                for z in fvg_zones
+            )
+
+            # Use Case 3: nearest unfilled bullish FVG above price, within 8% of current price
+            # Its bottom is a natural "magnet" → used as target override in risk.py
+            fvg_target = 0.0
+            for z in sorted(fvg_zones, key=lambda x: x["bottom"]):
+                if z["bottom"] > current_close and z["bottom"] <= current_close * 1.08:
+                    fvg_target = z["bottom"]
+                    break
+
             # Build and return the StockData object with all computed values
             # pd.isna() checks are needed because early bars (before enough data for EMA-200 etc.) are NaN
             return StockData(
@@ -280,6 +306,9 @@ class IndicatorEngine:
                 consolidation_range_pct=float(consolidation_pct),
                 obv_rising=obv_rising,
                 atr_ratio=float(last["atr_ratio"]) if not pd.isna(last["atr_ratio"]) else 1.0,
+                in_fvg_zone=in_fvg_zone,
+                fvg_pullback=fvg_pullback,
+                fvg_target=round(fvg_target, 2),
             )
         except Exception as e:
             log.error(f"Indicator calculation failed for {symbol}: {e}")
@@ -368,6 +397,45 @@ class IndicatorEngine:
         except Exception as e:
             log.debug(f"Candle pattern error: {e}")
         return "NONE"   # no pattern detected
+
+    @staticmethod
+    def _detect_fvg_zones(df: "pd.DataFrame", lookback: int = 50) -> list:
+        """
+        Scans the last `lookback` daily candles for unfilled bullish FVGs.
+
+        Bullish FVG (3-candle pattern):
+          Candle 1: any candle         → use its HIGH as FVG bottom
+          Candle 2: big impulse move   → price jumped through a range
+          Candle 3: candle after move  → use its LOW as FVG top
+
+        Valid FVG: candle_3.low > candle_1.high  (actual gap exists between them)
+        Filled: any subsequent candle's low traded down to or below the FVG bottom.
+
+        Returns list of {"bottom": float, "top": float, "age": int}
+          age = trading days since the FVG formed (0 = formed yesterday, 10 = 10 days ago)
+        Sorted newest first (age ascending).
+        """
+        if not LIBS_AVAILABLE or df is None or len(df) < 3:
+            return []
+        df_w = df.tail(lookback).reset_index(drop=True)
+        n    = len(df_w)
+        zones = []
+        for i in range(n - 2):
+            c1_high = float(df_w.iloc[i]["high"])
+            c3_low  = float(df_w.iloc[i + 2]["low"])
+            if c3_low <= c1_high:
+                continue   # no gap between candle 1 high and candle 3 low
+            # Check if any candle AFTER candle 3 has already filled the gap
+            # (filled = a candle's low traded back down to/below the FVG bottom)
+            filled = any(
+                float(df_w.iloc[j]["low"]) <= c1_high
+                for j in range(i + 3, n)
+            )
+            if not filled:
+                age = (n - 1) - (i + 2)   # candles elapsed since candle 3 (0 = most recent)
+                zones.append({"bottom": round(c1_high, 2), "top": round(c3_low, 2), "age": age})
+        zones.sort(key=lambda z: z["age"])   # newest first
+        return zones
 
     @staticmethod
     def check_4h_bullish(df_4h: Optional["pd.DataFrame"]) -> bool:

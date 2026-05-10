@@ -147,13 +147,13 @@ class Config:
         "SWING":    1.5,   # standard swing SL
         "BREAKOUT": 1.0,   # tight SL below consolidation low
         "PULLBACK": 1.0,   # SL just below the EMA being tested
-        "FII_FLOW": 2.0,   # wider SL — FII driven moves are volatile
         "WEEK52":   1.5,   # SL just below the old 52W high
     }
 
     # --- Strategy priority (higher = checked first, wins ties) ---
+    # FII sector buying is now a score modifier (+15) inside PULLBACK/BREAKOUT,
+    # not a separate strategy — so FII_FLOW is removed from this table.
     STRATEGY_PRIORITY = {
-        "FII_FLOW": 5,   # strongest edge — institutional money behind it
         "WEEK52":   4,   # rare but powerful
         "BREAKOUT": 3,   # high probability with volume confirmation
         "PULLBACK": 2,   # lower risk entry in existing trend
@@ -176,8 +176,8 @@ class Config:
     # --- Market condition thresholds ---
     VIX_CALM              = 13    # markets relaxed, all strategies active
     VIX_NORMAL            = 17    # normal conditions
-    VIX_NERVOUS           = 22    # reduce exposure, exit volatile trades
-    VIX_PANIC             = 28    # go to cash, no new trades
+    VIX_NERVOUS           = 25    # block new entries AND tighten existing trailing SL to (price - 0.5×ATR)
+    VIX_PANIC             = 29    # full exit all positions, go to cash
     FII_FLOW_THRESHOLD_CR = 2000  # ₹2000 Cr net = meaningful FII activity
     FII_CONSECUTIVE_DAYS  = 3     # need 3+ days in same direction to confirm trend
 
@@ -190,9 +190,9 @@ class Config:
     MAX_ENTRY_HOUR         = 13   # no new entries at or after 1:30 PM (holds overnight)
     MAX_ENTRY_MINUTE       = 30
     MAX_ENTRY_DRIFT_PCT    = 1.5  # skip entry if live price moved >1.5% from setup price
-    # FII_FLOW and BREAKOUT strategies expect gap-ups — allow wider drift for these.
+    # BREAKOUT and WEEK52 expect gap-ups on the entry signal — allow wider drift.
     MAX_ENTRY_DRIFT_PCT_WIDE = 3.0
-    WIDE_DRIFT_STRATEGIES  = {"FII_FLOW", "BREAKOUT", "WEEK52"}
+    WIDE_DRIFT_STRATEGIES  = {"BREAKOUT", "WEEK52"}
     EVENT_WARN_DAYS        = 10   # log warning if earnings/results within 10 days
     EVENT_EXIT_DAYS        = 5    # tighten SL to breakeven if event within 5 days (exit if at a loss)
     EVENT_FORCE_EXIT_DAYS  = 2    # force exit unconditionally if event within 2 days
