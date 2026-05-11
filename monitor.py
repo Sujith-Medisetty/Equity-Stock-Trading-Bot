@@ -234,6 +234,35 @@ class TradeMonitor:
                 self.db.update_sl_order_id(trade["trade_id"], new_id)
                 log.info(f"SYNC → {symbol} SL order re-placed @ ₹{sl:.2f} | id: {new_id}")
 
+        # --- Direction 4: DB remaining_qty ≠ Upstox qty → correct DB to match broker ---
+        # Happens when a partial sell (tier1/tier2) executed at the broker but the bot
+        # crashed before writing remaining_qty to DB, or the user manually sold some shares
+        # in the Upstox app. Without this fix, the next exit order tries to sell the stale
+        # DB qty and gets rejected by the exchange.
+        # Upstox is ground truth for how many shares are actually held.
+        db_open = {t["symbol"]: t for t in self.db.get_open_trades()}
+        for symbol, trade in db_open.items():
+            broker_qty = held_map.get(symbol, {}).get("qty", 0)
+            db_qty     = trade["remaining_qty"]
+            if broker_qty == db_qty:
+                continue
+            if broker_qty <= 0:
+                continue  # already handled as a full close in Direction 1
+            # Broker has fewer shares than DB — correct the DB
+            log.warning(f"SYNC QTY: {symbol} DB={db_qty} → Upstox={broker_qty} (correcting)")
+            self.db.execute(
+                "UPDATE trades SET remaining_qty=? WHERE trade_id=?",
+                (broker_qty, trade["trade_id"])
+            )
+            # The live SL order at the exchange was placed for db_qty shares — replace it
+            # so the exchange SL order matches the actual position size.
+            sl = trade["current_sl"]
+            if sl and sl > 0 and trade["sl_order_id"]:
+                new_id = self.order_mgr.replace_sl_order_safe(symbol, broker_qty, sl, trade["sl_order_id"])
+                if new_id:
+                    self.db.update_sl_order_id(trade["trade_id"], new_id)
+                    log.info(f"SYNC QTY: {symbol} SL order updated to {broker_qty} shares")
+
     def check_stale_trades(self):
         """
         Once-a-day stale-trade exit check. Called from step1 (pre-market).
