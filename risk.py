@@ -293,98 +293,63 @@ class RiskManager:
 
 class ChargesCalculator:
     """
-    Calculates exact NSE equity delivery charges for any trade.
-    All charge rates are defined in Config and reflect 2026 NSE fee schedule.
+    Fetches exact brokerage and statutory charges from the Upstox /v2/charges/brokerage API.
+    Falls back to manual rates (Config constants) if the API is unavailable.
 
-    Buy charges: STT (0.1%) + stamp duty (0.015%) + exchange charge + GST on exchange + SEBI
-    Sell charges: STT (0.1%) + DP charge (₹15.34 flat) + exchange charge + GST on exchange + SEBI
-
-    Note: stamp duty is only on the buy side (as per SEBI rules).
-    DP (depository participant) charge is only on the sell side — it's the cost
-    of moving shares out of your demat account when you sell.
-
-    annual_tax_summary() computes STCG tax on all profitable trades in the current
-    financial year (April 1 to March 31). STCG rate = 20% + 4% cess = 20.8% effective.
-    Also breaks down advance tax quarterly instalments — required if annual tax > ₹10,000.
+    calculate_trade_pnl() calls the API twice — once for BUY leg, once for SELL leg —
+    and sums them for a precise round-trip cost. The symbol→instrument_token mapping
+    (NSE_EQ|ISIN) is resolved inside OrderManager.get_brokerage().
     """
 
     @staticmethod
-    def calculate_buy_charges(buy_value: float) -> dict:
-        """Calculates all charges on the BUY leg of a delivery trade.
-        All rates are from Config — change them there if NSE updates the schedule."""
-        stt      = buy_value * Config.STT_DELIVERY     # 0.1% STT on buy side for delivery
-        stamp    = buy_value * Config.STAMP_DUTY        # 0.015% stamp duty (only on buy, not sell)
-        exchange = buy_value * Config.EXCHANGE_CHARGE   # NSE transaction charge (~0.003%)
-        gst      = exchange  * Config.GST_RATE          # 18% GST applied only on the exchange charge
-        sebi     = buy_value * Config.SEBI_CHARGE       # SEBI regulatory fee (tiny, ~0.0001%)
-        total    = stt + stamp + exchange + gst + sebi  # sum of all buy-side charges
-        return {
-            "stt": round(stt, 2), "stamp_duty": round(stamp, 2),
-            "exchange": round(exchange, 2), "gst": round(gst, 2),
-            "sebi": round(sebi, 2), "total": round(total, 2)
-        }
+    def _manual_buy_charges(buy_value: float) -> float:
+        stt      = buy_value * Config.STT_DELIVERY
+        stamp    = buy_value * Config.STAMP_DUTY
+        exchange = buy_value * Config.EXCHANGE_CHARGE
+        gst      = exchange  * Config.GST_RATE
+        sebi     = buy_value * Config.SEBI_CHARGE
+        return stt + stamp + exchange + gst + sebi
 
     @staticmethod
-    def calculate_sell_charges(sell_value: float) -> dict:
-        """Calculates all charges on the SELL leg of a delivery trade.
-        Key difference from buy: stamp duty is absent, DP charge is present."""
-        stt      = sell_value * Config.STT_DELIVERY     # 0.1% STT on sell side for delivery
-        dp       = Config.DP_CHARGE                     # ₹15.34 flat per sell transaction (demat debit charge)
-        exchange = sell_value * Config.EXCHANGE_CHARGE   # NSE transaction charge
-        gst      = exchange   * Config.GST_RATE          # 18% GST on exchange charge
-        sebi     = sell_value * Config.SEBI_CHARGE       # SEBI regulatory fee
-        total    = stt + dp + exchange + gst + sebi      # sum of all sell-side charges
-        return {
-            "stt": round(stt, 2), "dp_charge": round(dp, 2),
-            "exchange": round(exchange, 2), "gst": round(gst, 2),
-            "sebi": round(sebi, 2), "total": round(total, 2)
-        }
+    def _manual_sell_charges(sell_value: float) -> float:
+        stt      = sell_value * Config.STT_DELIVERY
+        dp       = Config.DP_CHARGE
+        exchange = sell_value * Config.EXCHANGE_CHARGE
+        gst      = exchange   * Config.GST_RATE
+        sebi     = sell_value * Config.SEBI_CHARGE
+        return stt + dp + exchange + gst + sebi
 
     @staticmethod
-    def calculate_trade_pnl(entry_price: float, exit_price: float, qty: int) -> dict:
+    def calculate_trade_pnl(symbol: str, entry_price: float, exit_price: float,
+                            qty: int, order_mgr=None) -> dict:
         """
-        Calculates gross PnL, total charges, and net PnL for a complete trade round-trip.
-        Also computes the STCG tax estimate (20.8%) on the net profit.
-        Called by TradeMonitor when closing a trade so the correct net_pnl is stored in DB.
+        Returns gross_pnl, total_charges, and net_pnl for a round-trip trade.
+        Charges are fetched from Upstox API (accurate to the rupee).
+        Falls back to manual Config rates if the API is unavailable.
         """
-        buy_value  = entry_price * qty    # total capital deployed on entry
-        sell_value = exit_price  * qty    # total proceeds from exit
-        gross_pnl  = sell_value - buy_value   # raw profit/loss before charges
-        buy_ch     = ChargesCalculator.calculate_buy_charges(buy_value)
-        sell_ch    = ChargesCalculator.calculate_sell_charges(sell_value)
-        total_ch   = buy_ch["total"] + sell_ch["total"]  # combined round-trip charges
-        net_pnl    = gross_pnl - total_ch                 # actual profit/loss in hand
-        # STCG tax: only on profitable trades (max(0,net_pnl) to avoid tax on losses)
-        stcg_tax   = max(0, net_pnl) * Config.EFFECTIVE_TAX   # 20.8% = 20% + 4% cess
-        return {
-            "gross_pnl":        round(gross_pnl, 2),
-            "total_charges":    round(total_ch, 2),
-            "net_pnl":          round(net_pnl, 2),
-            "stcg_tax_estimate": round(stcg_tax, 2),
-        }
+        buy_value  = entry_price * qty
+        sell_value = exit_price  * qty
+        gross_pnl  = sell_value - buy_value
 
-    @staticmethod
-    def annual_tax_summary(annual_stcg: float) -> dict:
-        """
-        Computes STCG tax for the full financial year.
-        annual_stcg = sum of all profitable trade net_pnl since April 1 (from DB).
-        Breaks down advance tax quarters — required if total tax > ₹10,000.
-        """
-        stcg_tax  = max(0, annual_stcg) * Config.STCG_RATE    # 20% on profits
-        cess      = stcg_tax * Config.CESS_RATE                # 4% health & education cess on the tax
-        total_tax = stcg_tax + cess                             # effective 20.8%
+        buy_total = sell_total = 0.0
+        if order_mgr is not None:
+            buy_ch  = order_mgr.get_brokerage(symbol, qty, entry_price, "BUY")
+            sell_ch = order_mgr.get_brokerage(symbol, qty, exit_price,  "SELL")
+            if buy_ch is not None and sell_ch is not None:
+                buy_total  = buy_ch["total"]
+                sell_total = sell_ch["total"]
+            else:
+                log.warning(f"Brokerage API unavailable for {symbol} — using manual rates")
+                buy_total  = ChargesCalculator._manual_buy_charges(buy_value)
+                sell_total = ChargesCalculator._manual_sell_charges(sell_value)
+        else:
+            buy_total  = ChargesCalculator._manual_buy_charges(buy_value)
+            sell_total = ChargesCalculator._manual_sell_charges(sell_value)
+
+        total_ch = buy_total + sell_total
+        net_pnl  = gross_pnl - total_ch
         return {
-            "annual_stcg":          round(annual_stcg, 2),
-            "stcg_tax_20pct":       round(stcg_tax, 2),
-            "cess_4pct":            round(cess, 2),
-            "total_tax":            round(total_tax, 2),
-            "take_home":            round(max(0, annual_stcg) - total_tax, 2),  # profit after tax
-            "advance_tax_required": total_tax > Config.ADVANCE_TAX_THRESHOLD,   # True if tax > ₹10k
-            # Advance tax installment schedule (% of annual liability due each quarter)
-            "advance_tax_quarters": {
-                "jun_15_15pct":  round(total_tax * 0.15, 2),   # 15% by June 15
-                "sep_15_45pct":  round(total_tax * 0.30, 2),   # another 30% by Sep 15 (cumulative 45%)
-                "dec_15_75pct":  round(total_tax * 0.30, 2),   # another 30% by Dec 15 (cumulative 75%)
-                "mar_15_100pct": round(total_tax * 0.25, 2),   # remaining 25% by Mar 15 (100%)
-            }
+            "gross_pnl":     round(gross_pnl, 2),
+            "total_charges": round(total_ch, 2),
+            "net_pnl":       round(net_pnl, 2),
         }

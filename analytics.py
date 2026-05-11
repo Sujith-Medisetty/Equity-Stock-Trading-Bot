@@ -31,7 +31,6 @@ from datetime import datetime
 from config import Config, log
 from models import MarketMode, FIIFlow
 from database import DatabaseManager
-from risk import ChargesCalculator
 
 
 class PerformanceAnalytics:
@@ -116,13 +115,9 @@ class PerformanceAnalytics:
             "strategy_breakdown": by_strategy,
         }
 
-    def tax_summary(self) -> dict:
-        return ChargesCalculator.annual_tax_summary(self.db.get_annual_stcg())
-
     def print_dashboard(self, available_capital: float = None):
         d  = self.daily_summary()
         m  = self.monthly_summary()
-        tx = self.tax_summary()
 
         max_trades = (
             Config.effective_max_trades(available_capital)
@@ -151,11 +146,6 @@ class PerformanceAnalytics:
                 for strat, stats in m["strategy_breakdown"].items():
                     wr = round(stats["wins"] / stats["trades"] * 100, 1)
                     print(f"     {strat:12s}: {stats['trades']} trades | {wr}% WR | ₹{stats['pnl']:,.0f}")
-
-        print(f"\n  TAX (Current FY)")
-        print(f"     STCG   : ₹{tx['annual_stcg']:,.2f}")
-        print(f"     Tax    : ₹{tx['total_tax']:,.2f}")
-        print(f"     Net    : ₹{tx['take_home']:,.2f}")
 
         open_trades = self.db.get_open_trades()
         if open_trades:

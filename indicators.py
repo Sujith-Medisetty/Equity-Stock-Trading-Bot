@@ -12,7 +12,7 @@ Two classes live here:
    This is the bridge between raw price data and tradeable signals.
 
 Flow:
-  DataCollector.fetch_ohlcv_daily()  →  raw DataFrame
+  DataCollector.fetch_all_ohlcv_parallel()  →  raw DataFrames
   IndicatorEngine.calculate_all()    →  StockData (with all indicators)
   StrategyEngine.evaluate_all()      →  uses StockData to find setups
 """

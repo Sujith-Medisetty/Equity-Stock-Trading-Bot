@@ -45,7 +45,7 @@ from indicators import IndicatorEngine
 from market_mode import MarketModeEngine
 from screener import StockScreener
 from strategy import StrategyEngine
-from risk import RiskManager, ChargesCalculator
+from risk import RiskManager
 from protection import ProtectionEngine
 from orders import OrderManager
 from monitor import TradeMonitor
@@ -146,7 +146,8 @@ class TradingSystem:
         # 250 days needed so EMA-200 is reliable (needs ~200+ bars to stabilise).
         # nifty_df is passed to IndicatorEngine.calculate_all() for each stock
         # so it can compute the relative strength (RS) score = stock return − Nifty return.
-        nifty_df = self.collector.fetch_ohlcv_daily("NIFTY 50", days=250)
+        nifty_ohlcv = self.collector.fetch_all_ohlcv_parallel(["NIFTY 50"])
+        nifty_df = nifty_ohlcv.get("NIFTY 50", (None, None, None))[0]
         if nifty_df is not None:
             # Calculate indicators for Nifty itself — used in step2 to detect market mode
             # (is Nifty above EMA20? EMA50? EMA200? What is Nifty's RSI?)
@@ -736,12 +737,6 @@ class TradingSystem:
         if self.protection.check_consecutive_losses():
             log.warning("3 CONSECUTIVE LOSSES — Review your system.")
 
-        # Compute STCG tax for the current financial year (April 1 → March 31).
-        # Alerts if annual tax liability exceeds ₹10,000 (advance tax payment required).
-        tax = self.analytics.tax_summary()
-        if tax["advance_tax_required"]:
-            log.warning(f"ADVANCE TAX DUE: ₹{tax['total_tax']:,.2f}")
-
     # =========================================================================
     # STEP 8: Morning briefing (9:15 AM — after steps 3-5 complete)
     # Prints a human-readable summary of market conditions and today's setups.
@@ -848,13 +843,11 @@ class TradingSystem:
         cleans up DB rows older than 90 days to keep the file size manageable.
         """
         m  = self.analytics.monthly_summary()   # reuse monthly stats for the weekly print
-        tx = self.analytics.tax_summary()
         print("\n" + "=" * 60)
         print("  WEEKLY REVIEW")
         print("=" * 60)
         if "total_trades" in m:
             print(f"  Trades   : {m['total_trades']}  WR: {m['win_rate']}%  Net: ₹{m['net_pnl']:,.2f}")
-        print(f"  STCG Tax : ₹{tx['total_tax']:,.2f}")
         print("=" * 60 + "\n")
 
         # Prune stock_snapshots, setups, and trailing_sl_log older than 90 days.
@@ -869,5 +862,3 @@ class TradingSystem:
         print("=" * 60 + "\n")
         self.run_daily()
         self.analytics.print_dashboard(self.available_capital)
-        tx = self.analytics.tax_summary()
-        print(f"Tax this FY — STCG: ₹{tx['annual_stcg']:,.2f} | Tax: ₹{tx['total_tax']:,.2f}")

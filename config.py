@@ -109,11 +109,7 @@ class Config:
 
     MAX_SIMULTANEOUS_TRADES = 4        # hard ceiling — never more than this regardless of capital
 
-    # No reserve deduction — the MIN_TRADE_CAPITAL floor already prevents trading
-    # when capital is too low, so subtracting a reserve is redundant.
-    CAPITAL_RESERVE         = 0
-
-    # Account-level floor (trading capital after reserve): stop all new trades below this.
+    # Account-level floor: stop all new trades below this.
     # At ₹20k trading capital the position size cap (25% × 20k = ₹5k) falls below
     # MIN_POSITION_VALUE anyway, so trades would be skipped regardless — this is the
     # explicit system-level gate that prevents even attempting to size a trade.
@@ -204,20 +200,13 @@ class Config:
     SL_REPLACE_MAX_RETRIES = 3     # retry SL placement this many times before emergency sell
     SL_REPLACE_RETRY_DELAY = 2     # seconds between retries
 
-    # --- NSE equity delivery charges (2026 rates) ---
-    # These are deducted from gross PNL to get net PNL
+    # --- NSE equity delivery charges — fallback rates (used only if Upstox brokerage API fails) ---
     STT_DELIVERY    = 0.001      # 0.1% on both buy and sell
     DP_CHARGE       = 15.34      # flat ₹15.34 per sell transaction (demat charge)
     EXCHANGE_CHARGE = 0.0000297  # NSE transaction charge
     STAMP_DUTY      = 0.00015    # 0.015% on buy side only
     GST_RATE        = 0.18       # 18% GST on exchange charges
     SEBI_CHARGE     = 0.000001   # SEBI regulatory fee
-
-    # --- Tax rates ---
-    STCG_RATE             = 0.20    # 20% Short Term Capital Gains tax
-    CESS_RATE             = 0.04    # 4% health & education cess on tax
-    EFFECTIVE_TAX         = 0.208   # combined: 20% + 4% cess
-    ADVANCE_TAX_THRESHOLD = 10000   # pay advance tax if annual liability > ₹10k
 
     # --- NSE public API endpoints (no auth needed, cookie-based) ---
     NSE_BASE        = "https://www.nseindia.com"
@@ -314,9 +303,7 @@ class Watchlist:
         "TCS":        {"sector": "IT",       "tier": 1},
     }
 
-    # Nifty 50 index — fetched as the market benchmark for RS calculation
-    NIFTY_SYMBOL      = "NIFTY 50"
-    NIFTY_SECURITY_ID = "13"
+    NIFTY_SYMBOL = "NIFTY 50"
 
     # NSE sector index names — used to pull sector-level FII activity
     SECTOR_INDICES = {
@@ -338,7 +325,3 @@ class Watchlist:
     @classmethod
     def get_sector(cls, symbol):
         return cls.STOCKS.get(symbol, {}).get("sector", "UNKNOWN")
-
-    @classmethod
-    def get_tier(cls, symbol):
-        return cls.STOCKS.get(symbol, {}).get("tier", 2)

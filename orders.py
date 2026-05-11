@@ -175,17 +175,72 @@ class OrderManager:
             log.warning(f"get_available_capital failed: {e} — falling back to Config.TOTAL_CAPITAL")
         return max(0.0, float(Config.TOTAL_CAPITAL))
 
+    def get_brokerage(self, symbol: str, qty: int, price: float, transaction_type: str) -> Optional[dict]:
+        """
+        Fetches exact brokerage and statutory charges from Upstox V2 API.
+        Returns a dict with all charge components, or None on failure (caller falls back to manual).
+
+        transaction_type: "BUY" or "SELL"
+        product: always "D" (delivery) for this system.
+
+        Response fields used:
+          charges.total          → total round-trip charges
+          charges.brokerage      → broker commission
+          charges.taxes.stt      → Securities Transaction Tax
+          charges.taxes.gst      → GST
+          charges.taxes.stamp_duty
+          charges.other_charges.transaction  → NSE transaction charge
+          charges.other_charges.sebi_turnover
+          charges.other_charges.clearing
+          charges.other_charges.ipft
+          charges.dp_plan.min_expense        → DP charge (sell side only)
+        """
+        if Config.BACKTEST_MODE or not self._client or not _requests:
+            return None
+        instrument_token = INSTRUMENT_KEYS.get(symbol)
+        if not instrument_token:
+            return None
+        try:
+            self._refresh_client_if_needed()
+            url = "https://api.upstox.com/v2/charges/brokerage"
+            params = {
+                "instrument_token": instrument_token,
+                "quantity":         qty,
+                "product":          "D",
+                "transaction_type": transaction_type.upper(),
+                "price":            price,
+            }
+            headers = {
+                "Authorization": f"Bearer {self._get_token()}",
+                "Accept":        "application/json",
+            }
+            resp = _requests.get(url, params=params, headers=headers, timeout=10)
+            if not resp.ok:
+                log.warning(f"get_brokerage HTTP {resp.status_code} for {symbol}")
+                return None
+            ch = resp.json().get("data", {}).get("charges", {})
+            taxes       = ch.get("taxes", {})
+            other       = ch.get("other_charges", {})
+            dp_plan     = ch.get("dp_plan", {})
+            return {
+                "total":        float(ch.get("total", 0)),
+                "brokerage":    float(ch.get("brokerage", 0)),
+                "stt":          float(taxes.get("stt", 0)),
+                "gst":          float(taxes.get("gst", 0)),
+                "stamp_duty":   float(taxes.get("stamp_duty", 0)),
+                "transaction":  float(other.get("transaction", 0)),
+                "sebi":         float(other.get("sebi_turnover", 0)),
+                "clearing":     float(other.get("clearing", 0)),
+                "ipft":         float(other.get("ipft", 0)),
+                "dp_charge":    float(dp_plan.get("min_expense", 0)),
+            }
+        except Exception as e:
+            log.warning(f"get_brokerage failed for {symbol}: {e}")
+            return None
+
     # -------------------------------------------------------------------------
     # Live prices — V3 batch endpoints (used by system.py and monitor.py)
     # -------------------------------------------------------------------------
-
-    def get_live_price(self, symbol: str) -> float:
-        """
-        Returns the current last traded price for a single symbol.
-        Returns 0.0 if Upstox is unavailable or the fetch fails.
-        """
-        prices = self.get_all_live_prices([symbol])
-        return prices.get(symbol, 0.0)
 
     def get_all_live_prices(self, symbols: list) -> dict:
         """

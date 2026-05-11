@@ -137,7 +137,7 @@ class TradeMonitor:
 
             # Calculate net PnL after charges for the trade that just closed
             pnl = ChargesCalculator.calculate_trade_pnl(
-                trade["entry_price"], exit_price, trade["remaining_qty"]
+                symbol, trade["entry_price"], exit_price, trade["remaining_qty"], self.order_mgr
             )
 
             # Mark the trade CLOSED in our DB with the actual exit details
@@ -459,17 +459,16 @@ class TradeMonitor:
             exit_qty  = max(1, qty // 2)    # sell half, minimum 1 share
             remaining = qty - exit_qty       # shares that stay in the position
 
-            # Before selling, check if the partial exit nets at least ₹100 after charges + STCG tax (20%).
-            # Below that threshold, the paperwork and tax cost more than the benefit.
-            partial_pnl = ChargesCalculator.calculate_trade_pnl(entry, price, exit_qty)
-            gross_gain   = (price - entry) * exit_qty
-            stcg_tax     = gross_gain * 0.20  # STCG 20% on equity held < 12 months
-            net_after_tax = partial_pnl["net_pnl"] - stcg_tax
-            if net_after_tax < 100:
-                # Partial sell nets less than ₹100 after charges + tax — not worth it.
+            # Before selling, check if the partial exit nets at least ₹100 after broker charges.
+            # Below that threshold, brokerage costs more than the benefit.
+            partial_pnl = ChargesCalculator.calculate_trade_pnl(
+                trade["symbol"], entry, price, exit_qty, self.order_mgr
+            )
+            if partial_pnl["net_pnl"] < 100:
+                # Partial sell nets less than ₹100 after charges — not worth it.
                 # Skip the sell, keep full qty, trail with 1×ATR instead.
                 log.info(f"TIER 2 SKIP: {trade['symbol']} partial sell of {exit_qty} shares "
-                         f"nets only ₹{net_after_tax:.2f} after charges+tax. "
+                         f"nets only ₹{partial_pnl['net_pnl']:.2f} after charges. "
                          f"Trailing full qty instead.")
                 new_trail_sl = price - atr  # trail 1×ATR below current price with full qty
                 if new_trail_sl > sl:
@@ -498,7 +497,9 @@ class TradeMonitor:
                 new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], remaining, new_sl, trade["sl_order_id"])
                 if new_id:
                     self.db.update_sl_order_id(trade_id, new_id)
-                pnl = ChargesCalculator.calculate_trade_pnl(entry, price, exit_qty)
+                pnl = ChargesCalculator.calculate_trade_pnl(
+                    trade["symbol"], entry, price, exit_qty, self.order_mgr
+                )
                 log.info(f"TIER 2 Net PNL so far: ₹{pnl['net_pnl']:.2f}")
 
         # ============================================================
@@ -544,8 +545,8 @@ class TradeMonitor:
             log.error(f"EXIT ORDER FAILED: {symbol}")
             return
 
-        # Calculate net PnL: gross PnL minus all NSE delivery charges (STT, DP, etc.)
-        pnl = ChargesCalculator.calculate_trade_pnl(entry, price, qty)
+        # Calculate net PnL: charges fetched from Upstox brokerage API
+        pnl = ChargesCalculator.calculate_trade_pnl(symbol, entry, price, qty, self.order_mgr)
 
         # Mark trade as CLOSED in the DB with all financial details
         self.db.close_trade(trade_id, price, reason,

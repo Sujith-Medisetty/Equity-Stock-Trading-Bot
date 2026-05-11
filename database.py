@@ -286,12 +286,6 @@ class DatabaseManager:
             s.status, s.skip_reason
         ))
 
-    def get_pending_setups(self, date: str):
-        return self.fetchall(
-            "SELECT * FROM setups WHERE date=? AND status='PENDING' ORDER BY score DESC",
-            (date,)
-        )
-
     # ---- Trades ----
     # Core trade record. Created at entry, updated throughout the trade lifecycle:
     #   - current_price updated every 15 mins by TradeMonitor
@@ -416,15 +410,6 @@ class DatabaseManager:
         row = self.fetchone(
             "SELECT SUM(net_pnl) as total FROM trades WHERE exit_date>=? AND status='CLOSED'",
             (datetime.now().strftime("%Y-%m-01"),)
-        )
-        return row["total"] or 0.0
-
-    def get_annual_stcg(self) -> float:
-        year = datetime.now().year if datetime.now().month >= 4 else datetime.now().year - 1
-        fy_start = f"{year}-04-01"
-        row = self.fetchone(
-            "SELECT SUM(net_pnl) as total FROM trades WHERE exit_date>=? AND status='CLOSED' AND net_pnl>0",
-            (fy_start,)
         )
         return row["total"] or 0.0
 
