@@ -174,6 +174,13 @@ class TradingSystem:
                 s_data.tf_aligned_count = sum([
                     s_data.weekly_bullish, s_data.daily_bullish, s_data.h4_bullish
                 ])
+                # Detect 4H FVG zones and merge with daily zones into the three FVG flags.
+                # Daily FVGs are rare (big structural gaps); 4H FVGs occur more frequently
+                # and give finer-grained confluence signals for intraday entries.
+                # apply_combined_fvg_flags() updates in_fvg_zone, fvg_pullback, fvg_target
+                # using OR logic across both timeframes.
+                s_data.fvg_zones_4h = IndicatorEngine.detect_4h_fvg_zones(df_4h)
+                IndicatorEngine.apply_combined_fvg_flags(s_data, s_data.close)
                 self.stocks_data[sym] = s_data
                 self.db.save_stock_snapshot(s_data)
 
@@ -458,6 +465,9 @@ class TradingSystem:
                     # EMAs themselves don't change (daily indicators on 250 bars) but
                     # whether price is above/below them changes if there's a gap.
                     live_data.daily_bullish = (live > data.ema_20 and data.ema_20 > data.ema_50)
+                    # Re-evaluate FVG flags (in_fvg_zone, fvg_pullback, fvg_target) against live price.
+                    # Uses both daily and 4H zone lists already stored in live_data (copied from data).
+                    IndicatorEngine.apply_combined_fvg_flags(live_data, live)
 
                     # Re-run all 5 strategy checks against the live-price-patched data.
                     # Returns the best qualifying setup, or None if none qualifies at the live price.
@@ -548,9 +558,9 @@ class TradingSystem:
         self.todays_setups = setups
 
     # =========================================================================
-    # MIDDAY SCAN — re-runs setup search at 11:30 AM and 1:30 PM
+    # MIDDAY SCAN — re-runs setup search on every 15-min cycle (via _conditional_monitor)
     # Uses daily indicators already calculated at 8:45 AM (stored in stocks_data)
-    # but replaces each stock's 'close' with the current live price.
+    # but replaces each stock's close, volume_ratio, open, and FVG flags with live values.
     # This catches setups that didn't exist at open — e.g. a stock that pulls
     # back to EMA20 at 11 AM, forming a valid PULLBACK entry missed at 9:10 AM.
     # =========================================================================
@@ -560,50 +570,82 @@ class TradingSystem:
             log.warning("Midday scan: no stock data — morning scan must run first")
             return
 
-        # Check all circuit breakers — don't enter trades if protection is active
         allowed, reason = self.protection.is_trading_allowed()
         if not allowed:
             log.info(f"Midday scan skipped: {reason}")
             return
 
-        log.info("MIDDAY SCAN: re-running with live prices...")
+        log.info("MIDDAY SCAN: re-running with live prices + intraday volume...")
 
-        # Fetch current live prices for all 15 stocks in one pass
-        live_prices = self._get_all_live_prices()
-        if not live_prices:
-            log.warning("Midday scan: could not fetch live prices — skipping")
+        # Fetch live quotes (price + today's traded volume) for all 15 stocks in one call.
+        # get_all_live_quotes() uses the full-quote endpoint instead of ltp() so we get
+        # today's intraday volume to refresh volume_ratio alongside the live price.
+        live_quotes = self._get_all_live_quotes()
+        if not live_quotes:
+            log.warning("Midday scan: could not fetch live quotes — skipping")
             return
 
         import copy
 
-        # Build a refreshed snapshot dict: same indicators as this morning,
-        # but close/high/low replaced with live values so setup conditions
-        # (e.g. "price within 0.5% of EMA20") are evaluated against current price.
         refreshed = {}
         for symbol, data in self.stocks_data.items():
-            live = live_prices.get(symbol, 0)
-            if live > 0:
-                updated              = copy.copy(data)    # shallow copy — preserves all indicator fields
-                updated.close        = live               # the main thing strategies use for price comparisons
-                # Update high/low to reflect intraday movement so indicators
-                # (candle patterns, consolidation range) use coherent OHLC.
-                updated.high         = max(data.high, live)    # if price moved above morning's high, record it
-                updated.low          = min(data.low, live)     # if price dipped below morning's low, record it
-                # Recompute daily_bullish using the live price vs the morning's EMA values.
-                # EMA values themselves don't change intraday (they're daily indicators on 250 bars).
-                updated.daily_bullish = (live > data.ema_20 and data.ema_20 > data.ema_50)
-                refreshed[symbol]    = updated
-            else:
-                refreshed[symbol] = data  # couldn't fetch live price — use morning data unchanged
+            quote = live_quotes.get(symbol)
+            if not quote:
+                refreshed[symbol] = data
+                continue
 
-        # Temporarily swap stocks_data with the live-price-refreshed version,
+            live         = quote["price"]
+            today_volume = quote["volume"]
+
+            if live <= 0:
+                refreshed[symbol] = data
+                continue
+
+            updated               = copy.copy(data)
+            updated.close         = live
+            updated.high          = max(data.high, live)
+            updated.low           = min(data.low, live)
+            updated.daily_bullish = (live > data.ema_20 and data.ema_20 > data.ema_50)
+
+            # Refresh today's session open.
+            # data.open is yesterday's daily open — meaningless for the PULLBACK check
+            # "close > open" (green candle = buyers stepped in today).
+            # The full quote returns today's intraday OHLC, so we can use the real open.
+            # If open is 0 (fallback ltp path), leave as yesterday's — stale but safe.
+            today_open = quote.get("open", 0)
+            if today_open > 0:
+                updated.open = today_open
+
+            # Refresh volume_ratio with today's real intraday volume.
+            # vol_avg (20-day average) is back-calculated from morning data:
+            #   morning volume_ratio = yesterday_volume / vol_avg
+            #   → vol_avg = yesterday_volume / morning_volume_ratio
+            # Then: intraday_volume_ratio = today_volume / vol_avg
+            # This makes BREAKOUT's 2x gate and PULLBACK's low-volume check honest
+            # for the actual session rather than relying on yesterday's volumes.
+            if today_volume > 0 and data.volume > 0 and data.volume_ratio > 0:
+                vol_avg              = data.volume / data.volume_ratio  # 20-day avg from morning
+                updated.volume_ratio = round(today_volume / vol_avg, 2)
+                log.debug(f"{symbol}: volume_ratio refreshed "
+                          f"{data.volume_ratio:.2f}→{updated.volume_ratio:.2f} "
+                          f"(today vol {today_volume:,.0f}, avg {vol_avg:,.0f})")
+            # If volume=0 (fallback ltp path), volume_ratio stays from morning — stale but safe.
+
+            # Re-evaluate all FVG flags (daily + 4H) against the live price.
+            # Zone boundaries are fixed from the morning — only whether live price
+            # falls inside them changes intraday. OR logic across both timeframes.
+            IndicatorEngine.apply_combined_fvg_flags(updated, live)
+
+            refreshed[symbol] = updated
+
+        # Temporarily swap stocks_data with the refreshed version,
         # run the full screen → strategy → execute pipeline, then restore original.
-        original          = self.stocks_data
-        self.stocks_data  = refreshed
-        screened          = self.step3_screen_stocks()
-        setups            = self.step4_find_setups(screened)
+        original         = self.stocks_data
+        self.stocks_data = refreshed
+        screened         = self.step3_screen_stocks()
+        setups           = self.step4_find_setups(screened)
         self.step5_execute_trades(setups)
-        self.stocks_data  = original   # restore so the monitoring cycle still has the morning snapshot
+        self.stocks_data = original
         log.info("MIDDAY SCAN complete")
 
     def _get_live_price(self, symbol: str) -> float:
@@ -615,9 +657,17 @@ class TradingSystem:
     def _get_all_live_prices(self) -> dict:
         """
         Returns live prices for all watchlist symbols in ONE Upstox batch LTP call.
-        Dict of {symbol: price}. Symbols where fetch failed are absent.
+        Dict of {symbol: price}. Used by monitoring — only needs price, fast.
         """
         return self.order_mgr.get_all_live_prices(Watchlist.get_symbols())
+
+    def _get_all_live_quotes(self) -> dict:
+        """
+        Returns live quotes (price + today's intraday volume) for all watchlist symbols.
+        Dict of {symbol: {"price": float, "volume": float}}.
+        Used by run_midday_scan() to refresh volume_ratio alongside the live price.
+        """
+        return self.order_mgr.get_all_live_quotes(Watchlist.get_symbols())
 
     # =========================================================================
     # STEP 6: Intraday monitoring (every 15 mins from 9:30 AM to 3:30 PM)

@@ -12,7 +12,6 @@ Two classes live here:
    - SWING:    entry − (ATR × 1.5)         standard swing SL
    - BREAKOUT: low of the consolidation box − (ATR × 0.5)  tight SL just below the box
    - PULLBACK: EMA20 − (ATR × 1.0)         SL below the level being tested
-   - FII_FLOW: entry − (ATR × 2.0)         wider SL for volatile institutional moves
    - WEEK52:   52W high − (ATR × 1.5)      SL just below the breakout level
 
    After sizing, RiskManager checks that the R:R ratio is at least 2.0 (1 risk : 2 reward).

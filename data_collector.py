@@ -3,10 +3,12 @@ data_collector.py — All inbound data fetching for the system.
 
 Two external sources feed the system:
 
-1. Upstox broker API (upstox-python-sdk)
-   - Historical OHLCV — daily bars for indicators, 60-min bars for 4H check
-   - Weekly bars (daily resampled) for weekly EMA check
-   - Live price quotes (LTP) via batch endpoint — all symbols in ONE call
+1. Upstox broker API (V3 REST + upstox-python-sdk for auth/configuration)
+   - Historical OHLCV via V3 REST — native 4H candles (unit="hours", interval=4),
+     daily bars (unit="days", interval=1), and weekly bars (unit="weeks", interval=1).
+     V3 endpoint: /v3/historical-candle/{instrument_key}/{unit}/{interval}/{to}/{from}
+   - Live price quotes (LTP) via V3 batch endpoint — all symbols in ONE call.
+     V3 LTP now natively returns volume + cp (prev close) alongside last_price.
    All fetches use parallel threads (max UPSTOX_MAX_WORKERS concurrent) with a
    shared rate limiter (UPSTOX_RATE_LIMIT_PER_SEC) to stay under Upstox's 250 req/min limit.
    Every call retries up to API_MAX_RETRIES times with exponential backoff.
@@ -27,6 +29,7 @@ Fallback:
 Instrument keys:
   Upstox identifies stocks by "NSE_EQ|{ISIN}" format, not the ticker symbol.
   INSTRUMENT_KEYS maps our symbol names to these keys.
+  V3 API responses use colon as separator (NSE_EQ:ISIN) — normalised back to pipe on parse.
 """
 
 import time
@@ -35,13 +38,18 @@ import functools
 from datetime import datetime, timedelta
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote as _url_quote
 
 from config import Config, Watchlist, log, LIBS_AVAILABLE, UPSTOX_AVAILABLE
 from database import DatabaseManager
 
 try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+try:
     import upstox_client
-    from upstox_client.api import HistoryApi, MarketQuoteApi
     from upstox_client.rest import ApiException
 except ImportError:
     upstox_client = None
@@ -80,6 +88,8 @@ INSTRUMENT_KEYS = {
     "TCS":        "NSE_EQ|INE467B01029",
     "NIFTY 50":   "NSE_INDEX|Nifty 50",
 }
+
+_V3_BASE = "https://api.upstox.com/v3"
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +181,10 @@ class DataCollector:
     Fetches all market data the system needs each morning.
     Called in step1_collect_data() for:
       - India VIX, GIFT Nifty, FII/DII (from NSE via pnsea)
-      - Daily + 4H (60-min) + weekly OHLCV for all 15 watchlist stocks (from Upstox, in parallel)
+      - Daily + 4H + weekly OHLCV for all 15 watchlist stocks (from Upstox V3, in parallel)
+        - Daily:  unit="days",  interval=1, days=400  (≈285 trading bars for EMA-200)
+        - 4H:     unit="hours", interval=4, days=90   (≈100 native 4H bars for FVG + EMA)
+        - Weekly: unit="weeks", interval=1, weeks=30  (30 native weekly bars for EMA-20)
       - Events calendar (earnings dates) for all watchlist stocks (from NSE)
     """
 
@@ -223,6 +236,10 @@ class DataCollector:
             # Rebuild the client with the refreshed token
             self._upstox = self._build_client(token)
 
+    def _get_token(self) -> str:
+        """Returns the current access token from the configured API client."""
+        return self._upstox.configuration.access_token if self._upstox else ""
+
     # -------------------------------------------------------------------------
     # Parallel OHLCV fetch — main entry point for step1
     # -------------------------------------------------------------------------
@@ -266,33 +283,42 @@ class DataCollector:
         """
         Fetches all 3 timeframes for one symbol sequentially (within one thread).
         Each fetch call rate-limits and retries internally.
+
+        df_daily  — 400 calendar days (≈285 trading bars)  → EMA-200 needs 200+ bars
+        df_4h     — 90 calendar days of native 4H bars (≈100 bars) → FVG zones + EMA
+        df_weekly — 30 native weekly bars (~7 months) → true 20-week EMA for weekly_bullish
         """
-        df_daily  = self.fetch_ohlcv_daily(symbol, days=250)
-        df_4h     = self.fetch_ohlcv_intraday(symbol, "60minute", days=30)
-        df_weekly = self.fetch_ohlcv_daily(symbol, days=500)
+        df_daily  = self._fetch_v3_candles(symbol, unit="days",  interval=1, days=400)
+        df_4h     = self._fetch_v3_candles(symbol, unit="hours", interval=4, days=90)
+        df_weekly = self._fetch_v3_candles(symbol, unit="weeks", interval=1, days=210)
         return df_daily, df_4h, df_weekly
 
     # -------------------------------------------------------------------------
-    # Per-timeframe fetch methods
+    # V3 historical candle fetch (unified for all timeframes)
     # -------------------------------------------------------------------------
 
     @_with_retry
-    def fetch_ohlcv_daily(self, symbol: str, days: int = 250) -> Optional["pd.DataFrame"]:
+    def _fetch_v3_candles(self, symbol: str, unit: str, interval: int,
+                           days: int) -> Optional["pd.DataFrame"]:
         """
-        Fetches daily OHLCV bars from Upstox for the given symbol.
-        250 days = ~1 year — sufficient for EMA-200 to stabilise.
-        500 days = ~2 years — used for the weekly chart check.
+        Fetches historical OHLCV via Upstox V3:
+          GET /v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}
 
-        At 8:45 AM (before market opens), the most recent candle is YESTERDAY's close.
-        The live price is fetched separately in step5 before any order is placed.
+        unit:     "days", "hours", "weeks", "months", "minutes"
+        interval: count within unit (e.g. 4 → 4H candles, 1 → daily bars)
+        days:     calendar days of history (timedelta applied to get from_date)
 
-        Upstox candle format: [timestamp, open, high, low, close, volume, open_interest]
-        Falls back to mock data ONLY in backtest/offline mode (never in live mode).
+        V3 data limits by unit:
+          hours/minutes → max 1 quarter; days → max 1 decade; weeks/months → unlimited
+
+        Instrument key is URL-encoded in path (| → %7C).
+        V3 candle format: [timestamp, open, high, low, close, volume, open_interest]
+        Falls back to mock data ONLY in backtest/offline mode.
         """
         self._rate_lim.wait()
 
-        if not self._upstox or not LIBS_AVAILABLE:
-            return self._safe_mock(symbol, days)
+        if not self._upstox or not LIBS_AVAILABLE or not _requests:
+            return self._safe_mock(symbol, unit, interval, days)
 
         instrument_key = INSTRUMENT_KEYS.get(symbol)
         if not instrument_key:
@@ -302,51 +328,35 @@ class DataCollector:
         to_date   = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-        api  = HistoryApi(self._upstox)
-        resp = api.get_historical_candle_data(
-            instrument_key, "day", to_date, from_date, api_version="2.0"
-        )
-        return self._candles_to_df(resp)
+        encoded_key = _url_quote(instrument_key, safe="")
+        url = f"{_V3_BASE}/historical-candle/{encoded_key}/{unit}/{interval}/{to_date}/{from_date}"
+        headers = {
+            "Authorization": f"Bearer {self._get_token()}",
+            "Accept":        "application/json",
+        }
 
-    @_with_retry
-    def fetch_ohlcv_intraday(self, symbol: str, interval: str = "60minute",
-                              days: int = 30) -> Optional["pd.DataFrame"]:
+        resp = _requests.get(url, headers=headers, timeout=15)
+        if not resp.ok:
+            err = IOError(f"HTTP {resp.status_code} for {symbol} [{unit}/{interval}]: {resp.text[:200]}")
+            err.status = resp.status_code
+            raise err
+
+        candles = resp.json().get("data", {}).get("candles", [])
+        return self._candles_to_df(candles)
+
+    def _candles_to_df(self, candles: list) -> Optional["pd.DataFrame"]:
         """
-        Fetches intraday OHLCV bars (60-minute interval) from Upstox.
-        30 days of 60-min bars = ~180 candles — enough for the 4H EMA check.
-        Upstox supports historical intraday data via the same HistoryApi endpoint.
-        """
-        self._rate_lim.wait()
-
-        if not self._upstox or not LIBS_AVAILABLE:
-            return self._safe_mock(symbol, days * 6)
-
-        instrument_key = INSTRUMENT_KEYS.get(symbol)
-        if not instrument_key:
-            return None
-
-        to_date   = datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-
-        api  = HistoryApi(self._upstox)
-        resp = api.get_historical_candle_data(
-            instrument_key, interval, to_date, from_date, api_version="2.0"
-        )
-        return self._candles_to_df(resp)
-
-    def _candles_to_df(self, resp) -> Optional["pd.DataFrame"]:
-        """
-        Converts an Upstox HistoryApi response into a standardised DataFrame.
-        Upstox candle format: [timestamp, open, high, low, close, volume, open_interest]
-        Returns None if the response is empty or malformed.
+        Converts a list of V3 candle arrays into a standardised DataFrame.
+        V3 candle format: [timestamp, open, high, low, close, volume, open_interest]
+        Returns None if the list is empty or malformed.
         """
         if not LIBS_AVAILABLE:
             return None
         try:
-            candles = resp.data.candles if resp and resp.data else []
             if not candles:
                 return None
-            df = pd.DataFrame(candles, columns=["date", "open", "high", "low", "close", "volume", "oi"])
+            df = pd.DataFrame(candles,
+                              columns=["date", "open", "high", "low", "close", "volume", "oi"])
             df["date"]   = pd.to_datetime(df["date"])
             df["volume"] = df["volume"].astype(float)
             for col in ["open", "high", "low", "close"]:
@@ -356,19 +366,37 @@ class DataCollector:
             log.error(f"Candle DataFrame conversion failed: {e}")
             return None
 
-    def _safe_mock(self, symbol: str, bars: int) -> Optional["pd.DataFrame"]:
+    def _safe_mock(self, symbol: str, unit: str, interval: int,
+                   days: int) -> Optional["pd.DataFrame"]:
         """
         Returns mock OHLCV only in backtest/offline mode.
         In live mode, logs a clear error and returns None so the stock is skipped —
         we never silently trade on fake data when a real connection was expected.
         """
         if Config.BACKTEST_MODE or not self._upstox:
-            return self._mock_ohlcv(symbol, bars)
+            return self._mock_ohlcv(symbol, self._estimate_bars(unit, interval, days))
         log.error(
             f"LIVE MODE: Could not fetch real data for {symbol} — "
             "skipping (not using mock data in live/sandbox mode)."
         )
         return None
+
+    @staticmethod
+    def _estimate_bars(unit: str, interval: int, days: int) -> int:
+        """Estimates bar count for mock data generation based on unit/interval/days."""
+        trading_day_fraction = 5 / 7          # 5 trading days per 7 calendar days
+        trading_hours_per_day = 6.5
+        if unit == "hours":
+            bars = days * trading_day_fraction * (trading_hours_per_day / interval)
+        elif unit == "minutes":
+            bars = days * trading_day_fraction * (trading_hours_per_day * 60 / interval)
+        elif unit == "weeks":
+            bars = days / 7
+        elif unit == "months":
+            bars = days / 30
+        else:   # days
+            bars = days * trading_day_fraction
+        return max(50, int(bars))
 
     def _mock_ohlcv(self, symbol: str, bars: int) -> Optional["pd.DataFrame"]:
         """
@@ -392,20 +420,19 @@ class DataCollector:
         })
 
     # -------------------------------------------------------------------------
-    # Live price (LTP) — batch endpoint: all symbols in ONE call
+    # Live price (LTP) — V3 batch endpoint: all symbols in ONE call
     # -------------------------------------------------------------------------
 
     def get_all_live_prices(self, symbols: list) -> dict:
         """
-        Fetches the last traded price for all given symbols in a SINGLE Upstox API call.
-        Upstox's MarketQuoteApi.ltp() accepts a comma-separated list of instrument keys
-        and returns all prices at once — far more efficient than one call per symbol.
+        Fetches the last traded price for all given symbols in a SINGLE Upstox V3 API call.
+        V3 LTP endpoint returns last_price + volume + cp (prev close) natively.
+        V3 response keys use colon separator (NSE_EQ:ISIN) — normalised to pipe for lookup.
         Returns {symbol: price}. Symbols where fetch failed are absent from the dict.
         """
-        if not self._upstox:
+        if not self._upstox or not _requests:
             return {}
 
-        # Build the comma-separated instrument key string for the batch call
         key_to_sym = {
             INSTRUMENT_KEYS[sym]: sym
             for sym in symbols
@@ -414,18 +441,23 @@ class DataCollector:
         if not key_to_sym:
             return {}
 
-        instrument_keys_csv = ",".join(key_to_sym.keys())
         try:
-            api  = MarketQuoteApi(self._upstox)
-            resp = api.ltp(instrument_keys_csv, api_version="2.0")
+            url     = f"{_V3_BASE}/market-quote/ltp"
+            params  = {"instrument_key": ",".join(key_to_sym.keys())}
+            headers = {
+                "Authorization": f"Bearer {self._get_token()}",
+                "Accept":        "application/json",
+            }
+            resp = _requests.get(url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
+
             prices = {}
-            if resp and resp.data:
-                for key, quote in resp.data.items():
-                    sym = key_to_sym.get(key)
-                    if sym:
-                        price = getattr(quote, "last_price", None)
-                        if price and float(price) > 0:
-                            prices[sym] = float(price)
+            for raw_key, quote in resp.json().get("data", {}).items():
+                # V3 returns "NSE_EQ:ISIN" — normalise colon to pipe for our lookup
+                sym   = key_to_sym.get(raw_key.replace(":", "|"))
+                price = quote.get("last_price") if isinstance(quote, dict) else None
+                if sym and price and float(price) > 0:
+                    prices[sym] = float(price)
             return prices
         except Exception as e:
             log.error(f"Batch LTP fetch failed: {e}")

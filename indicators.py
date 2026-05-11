@@ -117,29 +117,6 @@ class ta:
         return tr.ewm(com=length - 1, adjust=False).mean()   # smooth with EWM over 14 days
 
     @staticmethod
-    def bbands(series: "pd.Series", length: int = 20,
-               std: float = 2.0) -> Optional["pd.DataFrame"]:
-        """
-        Bollinger Bands — upper/lower bands at 2 std deviations from 20-day SMA.
-        Stored in StockData but not currently used in strategy criteria.
-        Useful for future volatility-based entries.
-
-        mid   = 20-day simple moving average (the middle band)
-        sigma = 20-day rolling standard deviation (measures volatility)
-        upper = mid + 2×sigma  (price above here = extended/overbought)
-        lower = mid - 2×sigma  (price below here = extended/oversold)
-        """
-        if not LIBS_AVAILABLE:
-            return None
-        mid   = series.rolling(length).mean()    # 20-day SMA
-        sigma = series.rolling(length).std()     # 20-day standard deviation
-        return pd.DataFrame({
-            "lower": mid - std * sigma,
-            "mid":   mid,
-            "upper": mid + std * sigma
-        })
-
-    @staticmethod
     def obv(close: "pd.Series", volume: "pd.Series") -> "pd.Series":
         """
         On-Balance Volume — cumulative volume in the direction of price.
@@ -206,14 +183,6 @@ class IndicatorEngine:
             # --- Volatility indicators ---
             df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=Config.ATR_PERIOD)  # 14-period ATR
 
-            # Bollinger Bands — stored for reference but not used in strategy conditions currently
-            bb = ta.bbands(df["close"], length=Config.BB_PERIOD, std=Config.BB_STD)
-            if bb is not None:
-                df["bb_upper"] = bb["upper"]
-                df["bb_lower"] = bb["lower"]
-            else:
-                df["bb_upper"] = df["bb_lower"] = df["close"]  # fallback: bands = close price
-
             # --- Volume analysis ---
             # 20-day rolling average volume — baseline for comparison
             df["vol_avg"]   = df["volume"].rolling(Config.VOLUME_AVG_PERIOD).mean()
@@ -231,11 +200,10 @@ class IndicatorEngine:
             # Get the last row — this is "today's" data (most recent candle)
             last = df.iloc[-1]
 
-            # --- 52-week high/low ---
+            # --- 52-week high ---
             # Use the last 252 trading days (~1 year) to find the range
             w52          = df.tail(252)
             week_52_high = w52["high"].max()    # highest point in the last year — key resistance level
-            week_52_low  = w52["low"].min()     # lowest point in the last year — key support level
 
             # --- 20-day consolidation tightness ---
             # Used for BREAKOUT strategy: a range < 8% means the stock was coiling (tight box)
@@ -251,34 +219,16 @@ class IndicatorEngine:
             obv_rising = len(df) >= 5 and bool(df["obv"].iloc[-1] > df["obv"].iloc[-5])
 
             # --- FVG (Fair Value Gap) zones ---
+            # Detect daily zones here. in_fvg_zone / fvg_pullback / fvg_target are left
+            # at their dataclass defaults and set by apply_combined_fvg_flags() below.
+            # step1_collect_data() calls it again after adding 4H zones so both timeframes
+            # are included — no point duplicating the flag logic here for daily-only.
             current_close = float(last["close"])
             fvg_zones     = IndicatorEngine._detect_fvg_zones(df)
 
-            # Use Case 1: price inside a RECENT FVG (≤10 candles old) = uncertain zone
-            # The market is actively filling a fresh imbalance → screener blocks entry
-            in_fvg_zone = any(
-                z["bottom"] <= current_close <= z["top"] and z["age"] <= 10
-                for z in fvg_zones
-            )
-
-            # Use Case 2: price inside ANY unfilled bullish FVG (any age)
-            # When PULLBACK fires here, it's extra confluence → score +10 in strategy.py
-            fvg_pullback = any(
-                z["bottom"] <= current_close <= z["top"]
-                for z in fvg_zones
-            )
-
-            # Use Case 3: nearest unfilled bullish FVG above price, within 8% of current price
-            # Its bottom is a natural "magnet" → used as target override in risk.py
-            fvg_target = 0.0
-            for z in sorted(fvg_zones, key=lambda x: x["bottom"]):
-                if z["bottom"] > current_close and z["bottom"] <= current_close * 1.08:
-                    fvg_target = z["bottom"]
-                    break
-
             # Build and return the StockData object with all computed values
             # pd.isna() checks are needed because early bars (before enough data for EMA-200 etc.) are NaN
-            return StockData(
+            s_data = StockData(
                 symbol=symbol,
                 date=datetime.now().strftime("%Y-%m-%d"),
                 open=float(last["open"]),
@@ -294,11 +244,8 @@ class IndicatorEngine:
                 macd_signal=float(last["macd_signal"]) if not pd.isna(last["macd_signal"]) else 0.0,
                 macd_hist=float(last["macd_hist"]) if not pd.isna(last["macd_hist"])   else 0.0,
                 atr=float(last["atr"])             if not pd.isna(last["atr"])          else 0.0,
-                bb_upper=float(last["bb_upper"])   if not pd.isna(last["bb_upper"])    else 0.0,
-                bb_lower=float(last["bb_lower"])   if not pd.isna(last["bb_lower"])    else 0.0,
                 volume_ratio=float(last["vol_ratio"]) if not pd.isna(last["vol_ratio"]) else 1.0,  # default 1.0 = average
                 week_52_high=float(week_52_high),
-                week_52_low=float(week_52_low),
                 rs_score=IndicatorEngine._calc_rs(df, nifty_df),             # relative strength vs Nifty
                 candle_pattern=IndicatorEngine._detect_candle_pattern(df),   # MARUBOZU, HAMMER, etc.
                 daily_bullish=bool(last["close"] > last["ema_20"] and
@@ -306,10 +253,12 @@ class IndicatorEngine:
                 consolidation_range_pct=float(consolidation_pct),
                 obv_rising=obv_rising,
                 atr_ratio=float(last["atr_ratio"]) if not pd.isna(last["atr_ratio"]) else 1.0,
-                in_fvg_zone=in_fvg_zone,
-                fvg_pullback=fvg_pullback,
-                fvg_target=round(fvg_target, 2),
+                fvg_zones=fvg_zones,  # stored for intraday re-evaluation in run_midday_scan()
             )
+            # Populate FVG flags using the shared function (daily-only at this point;
+            # step1_collect_data will call this again after fvg_zones_4h is set).
+            IndicatorEngine.apply_combined_fvg_flags(s_data, current_close)
+            return s_data
         except Exception as e:
             log.error(f"Indicator calculation failed for {symbol}: {e}")
             return None
@@ -440,14 +389,14 @@ class IndicatorEngine:
     @staticmethod
     def check_4h_bullish(df_4h: Optional["pd.DataFrame"]) -> bool:
         """
-        4H timeframe bullish check: is price above the 20-period EMA on the 60-min chart?
+        Intraday trend check: is price above the 20-period EMA on the native 4H chart?
         Used to confirm the daily signal has intraday momentum support.
-        Returns False if data is insufficient (< 25 hourly bars = 25 hours of data)
+        Returns False if data is insufficient (< 20 bars = ~12 trading days of native 4H data).
         """
-        if df_4h is None or len(df_4h) < 25:
+        if df_4h is None or len(df_4h) < 20:
             return False
         try:
-            ema = ta.ema(df_4h["close"], length=20)   # 20-period EMA on 60-min chart
+            ema = ta.ema(df_4h["close"], length=20)   # 20-period EMA on 4H chart
             return bool(df_4h["close"].iloc[-1] > ema.iloc[-1])   # is current price above EMA?
         except Exception:
             return False
@@ -466,3 +415,67 @@ class IndicatorEngine:
             return bool(df_weekly["close"].iloc[-1] > ema.iloc[-1])  # is current price above weekly EMA?
         except Exception:
             return False
+
+    @staticmethod
+    def detect_4h_fvg_zones(df_4h: Optional["pd.DataFrame"]) -> list:
+        """
+        Detects unfilled bullish FVGs on the native 4H timeframe.
+        lookback=50 native 4H bars ≈ 31 trading days (50 × 4H / 6.5H per day).
+        4H FVGs form more frequently than daily FVGs, giving more intraday confluence signals.
+        Returns [] if data is insufficient.
+        """
+        return IndicatorEngine._detect_fvg_zones(df_4h, lookback=50)
+
+    @staticmethod
+    def apply_combined_fvg_flags(s_data: "StockData", close: float):
+        """
+        Recomputes in_fvg_zone, fvg_pullback, fvg_target on s_data using BOTH
+        daily and 4H FVG zone lists against the given close price (live or EOD).
+
+        Called in three places:
+          1. step1_collect_data() — after 4H zones are stored, combine against yesterday's close
+          2. step5_execute_trades() — live-data block, re-check against actual live price
+          3. run_midday_scan() — every 15 min, re-check all flags against current live price
+
+        Timeframe priority rule:
+          Daily FVG > 4H FVG — a daily gap is a larger structural imbalance and takes
+          precedence over a 4H gap when both exist.
+
+          in_fvg_zone / fvg_pullback — OR logic. Action (block or bonus) is binary, so
+          either timeframe firing gives the same result. Daily or 4H, we block/bonus equally.
+
+          fvg_target — DAILY FIRST. If a daily FVG sits above price within 8%, use it.
+          Only fall back to the nearest 4H FVG if no daily FVG exists in that range.
+          Reason: a daily FVG is a stronger price magnet than a 4H one — institutions
+          left larger unfilled orders there. We want to target the more significant level.
+        """
+        daily = s_data.fvg_zones    or []
+        h4    = s_data.fvg_zones_4h or []
+
+        # in_fvg_zone: OR logic — either timeframe is enough to flag uncertain direction.
+        # Daily: age ≤ 10 daily bars (~2 weeks). 4H: age ≤ 5 native 4H bars (~3 trading days).
+        s_data.in_fvg_zone = (
+            any(z["bottom"] <= close <= z["top"] and z["age"] <= 10 for z in daily) or
+            any(z["bottom"] <= close <= z["top"] and z["age"] <= 5  for z in h4)
+        )
+
+        # fvg_pullback: OR logic — pullback into either timeframe's FVG is valid confluence.
+        s_data.fvg_pullback = (
+            any(z["bottom"] <= close <= z["top"] for z in daily) or
+            any(z["bottom"] <= close <= z["top"] for z in h4)
+        )
+
+        # fvg_target: daily takes priority over 4H.
+        # First look for a daily FVG above price within 8% — use the nearest one.
+        # If none found, fall back to the nearest 4H FVG above price within 8%.
+        daily_above = [z["bottom"] for z in daily
+                       if z["bottom"] > close and z["bottom"] <= close * 1.08]
+        h4_above    = [z["bottom"] for z in h4
+                       if z["bottom"] > close and z["bottom"] <= close * 1.08]
+
+        if daily_above:
+            s_data.fvg_target = round(min(daily_above), 2)   # nearest daily FVG wins
+        elif h4_above:
+            s_data.fvg_target = round(min(h4_above), 2)      # no daily in range → use 4H
+        else:
+            s_data.fvg_target = 0.0

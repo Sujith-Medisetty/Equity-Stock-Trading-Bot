@@ -137,12 +137,9 @@ class StockData:
     macd_signal:  float = 0.0
     macd_hist:    float = 0.0
     atr:          float = 0.0
-    bb_upper:     float = 0.0
-    bb_lower:     float = 0.0
 
     volume_ratio:            float = 1.0
     week_52_high:            float = 0.0
-    week_52_low:             float = 0.0
     rs_score:                float = 0.0
     candle_pattern:          str   = "NONE"
     weekly_bullish:          bool  = False
@@ -157,6 +154,10 @@ class StockData:
     in_fvg_zone:  bool  = False  # price inside a RECENT unfilled bullish FVG (≤10 days old) → screener blocks entry
     fvg_pullback: bool  = False  # price inside ANY unfilled bullish FVG → PULLBACK score +10
     fvg_target:   float = 0.0   # bottom of nearest unfilled bullish FVG above price (within 8%) → target override
+    # Raw zone lists stored so FVG flags can be re-evaluated against live price in midday scan
+    # without re-running detection on the full DataFrame. Not persisted to DB — memory only.
+    fvg_zones:    object = None  # daily FVG zones: list of {"bottom", "top", "age"} dicts
+    fvg_zones_4h: object = None  # 4H (60-min) FVG zones: same structure, finer-grained zones
 
 
 @dataclass

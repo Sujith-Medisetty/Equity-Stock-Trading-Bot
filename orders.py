@@ -19,6 +19,12 @@ Three types of orders this system places:
    Used for tier 2 partial exit, VIX exit, time exit, event exit.
    NOT used for SL exits — the exchange-level SL order handles those in live mode.
 
+API versions used:
+   Order placement (place/emergency) → Upstox V3 via direct HTTP to api-hft.upstox.com.
+     V3 response returns order_ids[] (array) instead of order_id (string).
+   Cancel order, holdings, order book, fund/margin → V2 SDK (no V3 variant documented).
+   Market quotes (LTP, OHLC) → V3 via direct HTTP to api.upstox.com.
+
 Paper trade behaviour:
    All three methods log the intended order but skip the actual API call.
    Live prices are always fetched from Upstox (real prices in both paper and live mode).
@@ -37,23 +43,28 @@ from datetime import datetime
 from typing import Optional, List
 
 from config import Config, log, LIBS_AVAILABLE, UPSTOX_AVAILABLE
-from data_collector import INSTRUMENT_KEYS, _with_retry
+from data_collector import INSTRUMENT_KEYS, _V3_BASE, _with_retry
 from models import Trade, Setup
 from database import DatabaseManager
 
 try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+try:
     import upstox_client
-    from upstox_client.api import OrderApi, PortfolioApi, UserApi, MarketQuoteApi
-    from upstox_client.models import PlaceOrderRequest
+    from upstox_client.api import OrderApi, PortfolioApi, UserApi
     from upstox_client.rest import ApiException
 except ImportError:
-    upstox_client    = None
-    OrderApi         = None
-    PortfolioApi     = None
-    UserApi          = None
-    MarketQuoteApi   = None
-    PlaceOrderRequest = None
-    ApiException     = Exception
+    upstox_client = None
+    OrderApi      = None
+    PortfolioApi  = None
+    UserApi       = None
+    ApiException  = Exception
+
+# V3 order placement uses a dedicated HFT subdomain — different from the standard API host.
+_V3_HFT_BASE = "https://api-hft.upstox.com/v3"
 
 
 class OrderManager:
@@ -104,12 +115,37 @@ class OrderManager:
         if token:
             self._client = self._build_client(token)
 
+    def _get_token(self) -> str:
+        """Returns the current access token from the configured API client."""
+        return self._client.configuration.access_token if self._client else ""
+
     def _ikey(self, symbol: str) -> str:
         """Returns the Upstox instrument key for a symbol. Raises ValueError if not mapped."""
         key = INSTRUMENT_KEYS.get(symbol)
         if not key:
             raise ValueError(f"No instrument key mapped for symbol '{symbol}'")
         return key
+
+    def _post_v3_order(self, payload: dict) -> str:
+        """
+        Places an order via the Upstox V3 HFT endpoint and returns the first order_id.
+        V3 uses api-hft.upstox.com (not api.upstox.com) — direct HTTP required.
+        V3 response: {"data": {"order_ids": ["id1", ...]}} — takes the first element.
+        Raises IOError with .status attribute on non-2xx responses (for @_with_retry).
+        """
+        url     = f"{_V3_HFT_BASE}/order/place"
+        headers = {
+            "Authorization": f"Bearer {self._get_token()}",
+            "Content-Type":  "application/json",
+            "Accept":        "application/json",
+        }
+        resp = _requests.post(url, json=payload, headers=headers, timeout=10)
+        if not resp.ok:
+            err = IOError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            err.status = resp.status_code
+            raise err
+        ids = resp.json().get("data", {}).get("order_ids", [])
+        return str(ids[0]) if ids else ""
 
     # -------------------------------------------------------------------------
     # Capital
@@ -140,7 +176,7 @@ class OrderManager:
         return max(0.0, float(Config.TOTAL_CAPITAL))
 
     # -------------------------------------------------------------------------
-    # Live prices — batch LTP (used by system.py and monitor.py)
+    # Live prices — V3 batch endpoints (used by system.py and monitor.py)
     # -------------------------------------------------------------------------
 
     def get_live_price(self, symbol: str) -> float:
@@ -153,29 +189,82 @@ class OrderManager:
 
     def get_all_live_prices(self, symbols: list) -> dict:
         """
-        Batch LTP fetch — returns {symbol: price} for all given symbols in ONE API call.
-        Upstox's MarketQuoteApi.ltp() accepts comma-separated instrument keys.
+        Batch LTP fetch — returns {symbol: price} for all given symbols in ONE V3 API call.
+        V3 LTP also returns volume and cp (prev close) natively alongside last_price.
+        V3 response keys use colon separator (NSE_EQ:ISIN) — normalised to pipe for lookup.
         Symbols where fetch failed are absent from the returned dict.
+        Used by monitoring (only needs price, fast).
         """
-        if not self._client:
+        if not self._client or not _requests:
             return {}
         key_to_sym = {INSTRUMENT_KEYS[s]: s for s in symbols if s in INSTRUMENT_KEYS}
         if not key_to_sym:
             return {}
         try:
-            api  = MarketQuoteApi(self._client)
-            resp = api.ltp(",".join(key_to_sym.keys()), api_version="2.0")
+            url     = f"{_V3_BASE}/market-quote/ltp"
+            params  = {"instrument_key": ",".join(key_to_sym.keys())}
+            headers = {
+                "Authorization": f"Bearer {self._get_token()}",
+                "Accept":        "application/json",
+            }
+            resp = _requests.get(url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
             prices = {}
-            if resp and resp.data:
-                for key, quote in resp.data.items():
-                    sym   = key_to_sym.get(key)
-                    price = getattr(quote, "last_price", None)
-                    if sym and price and float(price) > 0:
-                        prices[sym] = float(price)
+            for raw_key, quote in resp.json().get("data", {}).items():
+                sym   = key_to_sym.get(raw_key.replace(":", "|"))
+                price = quote.get("last_price") if isinstance(quote, dict) else None
+                if sym and price and float(price) > 0:
+                    prices[sym] = float(price)
             return prices
         except Exception as e:
             log.error(f"Batch LTP fetch failed: {e}")
             return {}
+
+    def get_all_live_quotes(self, symbols: list) -> dict:
+        """
+        Batch full-quote fetch — returns {symbol: {"price": float, "volume": float, "open": float}}.
+        Uses the V3 OHLC endpoint (interval=1d) which returns live_ohlc with today's volume
+        and session open — eliminating the need for a separate full market quote call.
+        V3 response keys use colon separator (NSE_EQ:ISIN) — normalised to pipe for lookup.
+        Falls back to LTP-only data (volume=0) if the richer call fails, so the midday
+        scan still runs on price alone rather than being skipped entirely.
+        """
+        if not self._client or not _requests:
+            return {}
+        key_to_sym = {INSTRUMENT_KEYS[s]: s for s in symbols if s in INSTRUMENT_KEYS}
+        if not key_to_sym:
+            return {}
+        try:
+            url     = f"{_V3_BASE}/market-quote/ohlc"
+            params  = {"instrument_key": ",".join(key_to_sym.keys()), "interval": "1d"}
+            headers = {
+                "Authorization": f"Bearer {self._get_token()}",
+                "Accept":        "application/json",
+            }
+            resp = _requests.get(url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
+            quotes = {}
+            for raw_key, quote in resp.json().get("data", {}).items():
+                sym   = key_to_sym.get(raw_key.replace(":", "|"))
+                price = quote.get("last_price", 0) if isinstance(quote, dict) else 0
+                if not sym or not price or float(price) <= 0:
+                    continue
+                # V3 OHLC nests today's session data under live_ohlc.
+                # live_ohlc.volume = total traded volume today (not bid-side depth).
+                # live_ohlc.open   = today's session open (for green candle check in midday scan).
+                live_ohlc  = quote.get("live_ohlc") or {}
+                volume     = float(live_ohlc.get("volume", 0) or 0)
+                today_open = float(live_ohlc.get("open",   0) or 0)
+                quotes[sym] = {
+                    "price":  float(price),
+                    "volume": volume,
+                    "open":   today_open,
+                }
+            return quotes
+        except Exception as e:
+            log.warning(f"get_all_live_quotes failed: {e} — falling back to LTP only")
+            prices = self.get_all_live_prices(symbols)
+            return {sym: {"price": p, "volume": 0.0, "open": 0.0} for sym, p in prices.items()}
 
     # -------------------------------------------------------------------------
     # Holdings & order book (used by TradeMonitor.sync_with_broker)
@@ -234,7 +323,7 @@ class OrderManager:
 
     def place_entry_order(self, setup: Setup) -> Optional[str]:
         """
-        Places a BUY LIMIT order + an SL SELL order.
+        Places a BUY LIMIT order + an SL SELL order via Upstox V3 HFT endpoint.
         Paper mode: skips API, records the trade directly (with slippage).
         Backtest mode: logs intent, records trade immediately.
         Returns trade_id string on success, None on failure.
@@ -252,7 +341,7 @@ class OrderManager:
             self._record_trade(trade_id, setup)
             return trade_id
 
-        if not self._client:
+        if not self._client or not _requests:
             log.error("Upstox client not initialised — cannot place order.")
             return None
 
@@ -260,51 +349,43 @@ class OrderManager:
 
         try:
             instrument_key = self._ikey(setup.symbol)
-            api = OrderApi(self._client)
 
             # BUY LIMIT at 0.1% above LTP for reliable fill
-            buy_price = round(setup.entry_price * 1.001, 2)
-            buy_resp  = api.place_order(
-                PlaceOrderRequest(
-                    quantity=setup.shares,
-                    product="D",               # D = Delivery (CNC equivalent)
-                    validity="DAY",
-                    price=buy_price,
-                    instrument_token=instrument_key,
-                    order_type="LIMIT",
-                    transaction_type="BUY",
-                    disclosed_quantity=0,
-                    trigger_price=0.0,
-                    is_amo=False,
-                    tag="bot_entry",
-                ),
-                api_version="2.0"
-            )
+            buy_price    = round(setup.entry_price * 1.001, 2)
+            buy_order_id = self._post_v3_order({
+                "quantity":           setup.shares,
+                "product":            "D",           # D = Delivery (CNC equivalent)
+                "validity":           "DAY",
+                "price":              buy_price,
+                "instrument_token":   instrument_key,
+                "order_type":         "LIMIT",
+                "transaction_type":   "BUY",
+                "disclosed_quantity": 0,
+                "trigger_price":      0.0,
+                "is_amo":             False,
+                "tag":                "bot_entry",
+            })
             log.info(f"{mode_tag} BUY placed: {setup.shares}×{setup.symbol} @ ₹{buy_price:.2f} "
-                     f"| order_id: {getattr(buy_resp.data, 'order_id', 'N/A')}")
+                     f"| order_id: {buy_order_id}")
 
             # SL SELL — exchange-level stop, fires even if bot goes offline
-            sl_resp = api.place_order(
-                PlaceOrderRequest(
-                    quantity=setup.shares,
-                    product="D",
-                    validity="DAY",
-                    price=setup.sl_price,         # limit price (matches trigger for immediate fill on breach)
-                    instrument_token=instrument_key,
-                    order_type="SL",              # stop-loss order type
-                    transaction_type="SELL",
-                    disclosed_quantity=0,
-                    trigger_price=setup.sl_price, # activates when price falls to this level
-                    is_amo=False,
-                    tag="bot_sl",
-                ),
-                api_version="2.0"
-            )
-            sl_order_id = getattr(sl_resp.data, "order_id", "") or ""
+            sl_order_id = self._post_v3_order({
+                "quantity":           setup.shares,
+                "product":            "D",
+                "validity":           "DAY",
+                "price":              setup.sl_price,    # limit price = trigger for immediate fill on breach
+                "instrument_token":   instrument_key,
+                "order_type":         "SL",              # stop-loss order type
+                "transaction_type":   "SELL",
+                "disclosed_quantity": 0,
+                "trigger_price":      setup.sl_price,    # activates when price falls to this level
+                "is_amo":             False,
+                "tag":                "bot_sl",
+            })
             log.info(f"{mode_tag} SL placed: {setup.symbol} @ ₹{setup.sl_price:.2f} "
                      f"| sl_order_id: {sl_order_id}")
 
-            self._record_trade(trade_id, setup, str(sl_order_id))
+            self._record_trade(trade_id, setup, sl_order_id)
             return trade_id
 
         except Exception as e:
@@ -353,12 +434,12 @@ class OrderManager:
             log.info(f"[BACKTEST] SL replaced: {symbol} → ₹{new_sl:.2f}")
             return ""
 
-        if not self._client:
+        if not self._client or not _requests:
             return ""
 
         mode_tag = "[PAPER]" if Config.PAPER_TRADE else "[LIVE]"
 
-        # Cancel old SL — failure here is acceptable (order may have already executed)
+        # Cancel old SL via V2 SDK — failure acceptable (order may have already executed)
         if old_order_id:
             try:
                 OrderApi(self._client).cancel_order(old_order_id, api_version="2.0")
@@ -366,23 +447,19 @@ class OrderManager:
             except Exception as e:
                 log.warning(f"Could not cancel SL {old_order_id} for {symbol}: {e} (may already be filled)")
 
-        sl_resp = OrderApi(self._client).place_order(
-            PlaceOrderRequest(
-                quantity=qty,
-                product="D",
-                validity="DAY",
-                price=new_sl,
-                instrument_token=self._ikey(symbol),
-                order_type="SL",
-                transaction_type="SELL",
-                disclosed_quantity=0,
-                trigger_price=new_sl,
-                is_amo=False,
-                tag="bot_sl",
-            ),
-            api_version="2.0"
-        )
-        new_id = str(getattr(sl_resp.data, "order_id", "") or "")
+        new_id = self._post_v3_order({
+            "quantity":           qty,
+            "product":            "D",
+            "validity":           "DAY",
+            "price":              new_sl,
+            "instrument_token":   self._ikey(symbol),
+            "order_type":         "SL",
+            "transaction_type":   "SELL",
+            "disclosed_quantity": 0,
+            "trigger_price":      new_sl,
+            "is_amo":             False,
+            "tag":                "bot_sl",
+        })
         log.info(f"{mode_tag} New SL placed: {symbol} @ ₹{new_sl:.2f} | id: {new_id}")
         return new_id
 
@@ -406,27 +483,23 @@ class OrderManager:
 
     def _emergency_sell(self, symbol: str, qty: int):
         """Last-resort MARKET SELL when SL order placement has failed repeatedly."""
-        if not self._client:
+        if not self._client or not _requests:
             return
         try:
-            resp = OrderApi(self._client).place_order(
-                PlaceOrderRequest(
-                    quantity=qty,
-                    product="D",
-                    validity="DAY",
-                    price=0.0,                      # price=0 for market orders in Upstox
-                    instrument_token=self._ikey(symbol),
-                    order_type="MARKET",
-                    transaction_type="SELL",
-                    disclosed_quantity=0,
-                    trigger_price=0.0,
-                    is_amo=False,
-                    tag="bot_emergency",
-                ),
-                api_version="2.0"
-            )
-            log.critical(f"EMERGENCY MARKET SELL placed: {qty}×{symbol} "
-                         f"| order_id: {getattr(resp.data, 'order_id', 'N/A')}")
+            order_id = self._post_v3_order({
+                "quantity":           qty,
+                "product":            "D",
+                "validity":           "DAY",
+                "price":              0.0,           # price=0 for market orders in Upstox
+                "instrument_token":   self._ikey(symbol),
+                "order_type":         "MARKET",
+                "transaction_type":   "SELL",
+                "disclosed_quantity": 0,
+                "trigger_price":      0.0,
+                "is_amo":             False,
+                "tag":                "bot_emergency",
+            })
+            log.critical(f"EMERGENCY MARKET SELL placed: {qty}×{symbol} | order_id: {order_id}")
         except Exception as e2:
             log.critical(f"EMERGENCY SELL ALSO FAILED for {symbol}: {e2} — POSITION UNPROTECTED")
 
@@ -446,33 +519,30 @@ class OrderManager:
             log.info(f"[BACKTEST] SELL {qty}×{symbol} @ ₹{price:.2f} | {reason}")
             return True
 
-        if not self._client:
+        if not self._client or not _requests:
             return False
 
         if Config.PAPER_TRADE:
             price = round(price * (1 - Config.PAPER_SLIPPAGE_PCT), 2)
 
-        mode_tag = "[PAPER]" if Config.PAPER_TRADE else "[LIVE]"
+        mode_tag   = "[PAPER]" if Config.PAPER_TRADE else "[LIVE]"
         sell_price = round(price * 0.999, 2)   # 0.1% below market for reliable fill
         log.info(f"{mode_tag} SELL {qty}×{symbol} @ ₹{sell_price:.2f} | {reason}")
 
         try:
-            OrderApi(self._client).place_order(
-                PlaceOrderRequest(
-                    quantity=qty,
-                    product="D",
-                    validity="DAY",
-                    price=sell_price,
-                    instrument_token=self._ikey(symbol),
-                    order_type="LIMIT",
-                    transaction_type="SELL",
-                    disclosed_quantity=0,
-                    trigger_price=0.0,
-                    is_amo=False,
-                    tag=f"bot_{reason[:20].lower().replace(' ', '_')}",
-                ),
-                api_version="2.0"
-            )
+            self._post_v3_order({
+                "quantity":           qty,
+                "product":            "D",
+                "validity":           "DAY",
+                "price":              sell_price,
+                "instrument_token":   self._ikey(symbol),
+                "order_type":         "LIMIT",
+                "transaction_type":   "SELL",
+                "disclosed_quantity": 0,
+                "trigger_price":      0.0,
+                "is_amo":             False,
+                "tag":                f"bot_{reason[:20].lower().replace(' ', '_')}",
+            })
             return True
         except Exception as e:
             log.error(f"Sell order failed for {symbol}: {e}")

@@ -58,7 +58,7 @@ from models import MarketMode, FIIFlow, StrategyType, StockData, Setup  # FIIFlo
 
 class StrategyEngine:
     """
-    Evaluates all 5 strategies against a stock's technical data.
+    Evaluates all 4 strategies against a stock's technical data.
     Called once per screened stock in step4_find_setups().
     Returns the single best Setup or None if no strategy qualifies.
     """
@@ -67,10 +67,9 @@ class StrategyEngine:
                      market_mode: MarketMode, fii_flow: FIIFlow,
                      fii_sector_buying: bool = False) -> Optional[Setup]:
         """
-        Tries all 5 strategies and returns the best one (by priority, then score).
-        A stock could qualify for multiple strategies simultaneously
-        (e.g., BREAKOUT + FII_FLOW both pass). We always take the higher-priority one
-        because FII backing makes the trade more reliable than a standalone breakout.
+        Tries all 4 strategies and returns the best one (by priority, then score).
+        A stock could qualify for multiple strategies simultaneously — we always
+        take the highest-priority one that passes.
         """
         candidates = []
 

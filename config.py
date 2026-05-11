@@ -169,8 +169,6 @@ class Config:
     MACD_FAST         = 12
     MACD_SLOW         = 26
     MACD_SIGNAL       = 9
-    BB_PERIOD         = 20
-    BB_STD            = 2
     VOLUME_AVG_PERIOD = 20
 
     # --- Market condition thresholds ---

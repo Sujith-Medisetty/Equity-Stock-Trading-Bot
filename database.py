@@ -251,16 +251,15 @@ class DatabaseManager:
             INSERT OR REPLACE INTO stock_snapshots
             (date, symbol, open, high, low, close, volume,
              ema_20, ema_50, ema_200, rsi, macd, macd_signal, macd_hist,
-             atr, bb_upper, bb_lower, volume_ratio, week_52_high, week_52_low,
+             atr, volume_ratio, week_52_high,
              rs_score, candle_pattern, weekly_bullish, daily_bullish, h4_bullish,
              tf_aligned_count, consolidation_range_pct, obv_rising, atr_ratio)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             s.date, s.symbol, s.open, s.high, s.low, s.close, s.volume,
             s.ema_20, s.ema_50, s.ema_200, s.rsi,
             s.macd, s.macd_signal, s.macd_hist,
-            s.atr, s.bb_upper, s.bb_lower,
-            s.volume_ratio, s.week_52_high, s.week_52_low,
+            s.atr, s.volume_ratio, s.week_52_high,
             s.rs_score, s.candle_pattern,
             int(s.weekly_bullish), int(s.daily_bullish), int(s.h4_bullish),
             s.tf_aligned_count, s.consolidation_range_pct,
