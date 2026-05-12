@@ -114,11 +114,9 @@ class RiskManager:
             sl = stock_data.week_52_high - (atr * 1.5)
 
         elif setup.strategy == StrategyType.PULLBACK:
-            # For PULLBACK: SL 1.5×ATR below EMA20.
-            # Entry is within 0.3×ATR of EMA20, so the gap to SL is at least 1.2×ATR —
-            # enough buffer to survive normal daily noise without premature SL hits.
-            # The logic: we're buying at EMA20 support. If price breaks BELOW EMA20, the setup is invalid.
-            sl = stock_data.ema_20 - (atr * 1.5)
+            # SL placed 1.5×ATR below EMA20 — if EMA20 breaks, setup is invalid.
+            # Entry is within 0.3×ATR of EMA20 so actual risk ≈ 1.8×ATR.
+            sl = stock_data.ema_20 - (atr * Config.ATR_MULT.get("PULLBACK", 1.5))
 
         # How much can we lose per share if SL is hit?
         risk_per_share = entry - sl
@@ -128,18 +126,20 @@ class RiskManager:
             setup.status = "SKIPPED"
             return setup
 
-        # Target = entry + (risk_per_share × minimum R:R).
-        # At min R:R of 2.0: if we risk ₹10/share, we target ₹20/share profit.
-        target = entry + (risk_per_share * Config.MIN_RR_RATIO)
+        # PULLBACK uses a lower RR threshold (1.5) because it's mean-reversion to the recent
+        # swing high — target is ≈2.7×ATR away, which is reachable. The global MIN_RR_RATIO
+        # of 2.5 pushed targets to 4.5×ATR — unreachable for large-caps → chronic losses.
+        min_rr = Config.PULLBACK_MIN_RR if setup.strategy == StrategyType.PULLBACK else Config.MIN_RR_RATIO
+        target = entry + (risk_per_share * min_rr)
 
         # FVG target override for SWING and PULLBACK:
         # If there's an unfilled bullish FVG above price (within 8%), its bottom is a
         # natural magnet — institutions left orders there. Use it as target if it gives
-        # better R:R than the standard 2×ATR target AND still meets the 2:1 minimum.
+        # better R:R than the standard target AND still meets the minimum.
         if (setup.strategy in (StrategyType.PULLBACK, StrategyType.SWING) and
                 stock_data.fvg_target > entry):
             fvg_rr = (stock_data.fvg_target - entry) / risk_per_share
-            if fvg_rr >= Config.MIN_RR_RATIO and stock_data.fvg_target > target:
+            if fvg_rr >= min_rr and stock_data.fvg_target > target:
                 log.info(
                     f"{setup.symbol}: FVG target ₹{stock_data.fvg_target:.2f} used "
                     f"(R:R {fvg_rr:.1f}:1 vs standard {(target - entry) / risk_per_share:.1f}:1)"
@@ -193,10 +193,8 @@ class RiskManager:
         # At min 2.0: we make ₹2 if right, lose ₹1 if wrong.
         rr = (target - entry) / risk_per_share
 
-        if rr < Config.MIN_RR_RATIO:
-            # R:R below 2.0 — not worth taking. Even a 50% win rate would break even,
-            # but charges would make it a net loser.
-            setup.skip_reason = f"RR too low: {rr:.2f}"
+        if rr < min_rr:
+            setup.skip_reason = f"RR too low: {rr:.2f} (min {min_rr})"
             setup.status = "SKIPPED"
             return setup
 

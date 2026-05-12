@@ -115,7 +115,7 @@ class Config:
     # In live/sandbox mode the actual available balance is fetched from Upstox
     # via get_available_capital() on every step1 run, so limits auto-scale
     # with your real portfolio as positions are added or closed.
-    TOTAL_CAPITAL           = 200000   # backtest fallback only
+    TOTAL_CAPITAL           = 600000   # backtest fallback only
 
     # Percentage-based limits — applied against live available capital at runtime.
     CAPITAL_PER_TRADE_PCT   = 0.25     # max 25% of available capital per position
@@ -142,22 +142,25 @@ class Config:
     #   qty=3 → tier 2 sells 1, tier 3 trails 2 shares properly ✓
     MIN_QUANTITY            = 3        # minimum shares — below this the tiered exit breaks down
 
-    # --- Loss protection limits ---
-    DAILY_LOSS_LIMIT   = 3000
-    WEEKLY_LOSS_LIMIT  = 6000
-    MONTHLY_LOSS_LIMIT = 10000
-    MAX_DRAWDOWN       = 20000
+    # --- Loss protection limits (scaled 3× for ₹6L capital vs original ₹2L) ---
+    DAILY_LOSS_LIMIT   = 9000
+    WEEKLY_LOSS_LIMIT  = 18000
+    MONTHLY_LOSS_LIMIT = 30000
+    MAX_DRAWDOWN       = 60000
 
     # --- Risk/reward ---
-    MIN_RR_RATIO = 1.5   # minimum 1:1.5 — risk ₹1 to make ₹1.5
+    MIN_RR_RATIO     = 2.5   # minimum R:R for SWING / BREAKOUT / WEEK52
+    PULLBACK_MIN_RR  = 1.5   # PULLBACK is mean-reversion: target = recent swing high ≈ 2.7×ATR away
+                              # At 1.5 RR with 45% win rate: EV = +0.125 per trade (positive)
+                              # At 2.5 RR target was 4.5×ATR — unreachable for large-caps → losses
 
     # --- ATR multipliers for stop loss placement per strategy ---
     # Higher multiplier = wider SL = more breathing room but more risk per share
     ATR_MULT = {
-        "SWING":    2.0,   # SL wider than PULLBACK entry since price is already above EMA20
-        "BREAKOUT": 1.0,   # tight SL below consolidation low
-        "PULLBACK": 3.0,   # SL placed wider to avoid whipsaw exits through intraday noise
-        "WEEK52":   1.5,   # SL just below the old 52W high
+        "SWING":    2.0,   # SL wider — price already above EMA20 by definition
+        "BREAKOUT": 1.5,   # breakouts retest before continuing, need room below the box
+        "PULLBACK": 1.5,   # SL 1.5×ATR below EMA20 — logical: if EMA20 breaks, setup is invalid
+        "WEEK52":   1.5,   # SL just below the old 52W high (now support)
     }
 
     # --- Strategy priority (higher = checked first, wins ties) ---
@@ -193,7 +196,7 @@ class Config:
     MARKET_OPEN_WAIT_MINS  = 15   # wait 15 mins after 9:15 before any entry
     FRIDAY_NO_ENTRY_HOUR   = 14   # no new entries after 2 PM Friday (weekend risk)
     MONDAY_NO_ENTRY_MINS   = 30   # wait 30 mins Monday morning (gap resolution)
-    MAX_HOLD_DAYS          = 15   # force exit if trade open > 15 days without profit
+    MAX_HOLD_DAYS          = 40   # force exit if trade open > 40 days without profit (momentum cycles run 6-12 weeks)
     COOLDOWN_AFTER_LOSS_HR = 2    # wait 2 hours after a SL hit before next trade
     MAX_ENTRY_HOUR         = 13   # no new entries at or after 1:30 PM (holds overnight)
     MAX_ENTRY_MINUTE       = 30
@@ -257,11 +260,14 @@ class Config:
         Fixed rupee risk per trade based on current trading capital (after reserve).
         Returns 0 when capital is at or below the floor — caller must skip the trade.
 
-          > ₹80,000  → ₹1,500  (full risk, meaningful profit after tax)
-          > ₹20,000  → ₹1,000  (reduced risk, still clears charges + STCG)
-          ≤ ₹20,000  → ₹0      (below floor — no new trades)
+          > ₹3,00,000 → ₹3,000  (0.5% of ₹6L — proportionally same as ₹1,500 on ₹3L)
+          > ₹80,000   → ₹1,500  (full risk, meaningful profit after tax)
+          > ₹20,000   → ₹1,000  (reduced risk, still clears charges + STCG)
+          ≤ ₹20,000   → ₹0      (below floor — no new trades)
         """
-        if trading_capital > 80000:
+        if trading_capital > 300000:
+            return 3000.0
+        elif trading_capital > 80000:
             return 1500.0
         elif trading_capital > 20000:
             return 1000.0
@@ -304,93 +310,148 @@ class Watchlist:
         "KOTAKBANK":  {"sector": "BANKING",      "tier": 1},
         "INDUSINDBK": {"sector": "BANKING",      "tier": 1},
 
-        # ── FINANCE (3) ──────────────────────────────────────────────────────
-        "BAJFINANCE": {"sector": "FINANCE",      "tier": 1},
-        "BAJAJFINSV": {"sector": "FINANCE",      "tier": 1},
-        "SHRIRAMFIN": {"sector": "FINANCE",      "tier": 1},
+        # ── FINANCE (5) ──────────────────────────────────────────────────────
+        "BAJFINANCE": {"sector": "FINANCE",        "tier": 1},
+        "BAJAJFINSV": {"sector": "FINANCE",        "tier": 1},
+        "SHRIRAMFIN": {"sector": "FINANCE",        "tier": 1},
+        "MUTHOOTFIN": {"sector": "FINANCE",        "tier": 1},
+        "CHOLAFIN":   {"sector": "FINANCE",        "tier": 1},
 
         # ── INSURANCE (2) ────────────────────────────────────────────────────
-        "HDFCLIFE":   {"sector": "INSURANCE",    "tier": 1},
-        "SBILIFE":    {"sector": "INSURANCE",    "tier": 1},
+        "HDFCLIFE":   {"sector": "INSURANCE",      "tier": 1},
+        "SBILIFE":    {"sector": "INSURANCE",      "tier": 1},
 
-        # ── AUTO (6) ─────────────────────────────────────────────────────────
-        "TATAMOTORS": {"sector": "AUTO",         "tier": 1},
-        "MARUTI":     {"sector": "AUTO",         "tier": 1},
-        "M&M":        {"sector": "AUTO",         "tier": 1},
-        "BAJAJ-AUTO": {"sector": "AUTO",         "tier": 1},
-        "HEROMOTOCO": {"sector": "AUTO",         "tier": 1},
-        "EICHERMOT":  {"sector": "AUTO",         "tier": 1},
+        # ── AUTO (7) ─────────────────────────────────────────────────────────
+        "TATAMOTORS": {"sector": "AUTO",           "tier": 1},
+        "MARUTI":     {"sector": "AUTO",           "tier": 1},
+        "M&M":        {"sector": "AUTO",           "tier": 1},
+        "BAJAJ-AUTO": {"sector": "AUTO",           "tier": 1},
+        "HEROMOTOCO": {"sector": "AUTO",           "tier": 1},
+        "EICHERMOT":  {"sector": "AUTO",           "tier": 1},
+        "TVSMOTOR":   {"sector": "AUTO",           "tier": 1},
+
+        # ── AUTO_COMP (4) — auto components / tyres ──────────────────────────
+        "MOTHERSON":  {"sector": "AUTO_COMP",      "tier": 1},
+        "MRF":        {"sector": "AUTO_COMP",      "tier": 1},
+        "TIINDIA":    {"sector": "AUTO_COMP",      "tier": 1},
+        "BOSCHLTD":   {"sector": "AUTO_COMP",      "tier": 1},
 
         # ── FMCG (5) ─────────────────────────────────────────────────────────
-        "ITC":        {"sector": "FMCG",         "tier": 1},
-        "HINDUNILVR": {"sector": "FMCG",         "tier": 1},
-        "NESTLEIND":  {"sector": "FMCG",         "tier": 1},
-        "BRITANNIA":  {"sector": "FMCG",         "tier": 1},
-        "TATACONSUM": {"sector": "FMCG",         "tier": 1},
+        "ITC":        {"sector": "FMCG",           "tier": 1},
+        "HINDUNILVR": {"sector": "FMCG",           "tier": 1},
+        "NESTLEIND":  {"sector": "FMCG",           "tier": 1},
+        "BRITANNIA":  {"sector": "FMCG",           "tier": 1},
+        "TATACONSUM": {"sector": "FMCG",           "tier": 1},
 
-        # ── CONSUMER (3) ─────────────────────────────────────────────────────
-        "TITAN":      {"sector": "CONSUMER",     "tier": 1},
-        "ASIANPAINT": {"sector": "CONSUMER",     "tier": 1},
-        "TRENT":      {"sector": "CONSUMER",     "tier": 1},
+        # ── CONSUMER (6) ─────────────────────────────────────────────────────
+        "TITAN":      {"sector": "CONSUMER",       "tier": 1},
+        "ASIANPAINT": {"sector": "CONSUMER",       "tier": 1},
+        "TRENT":      {"sector": "CONSUMER",       "tier": 1},
+        "PAGEIND":    {"sector": "CONSUMER",       "tier": 1},
+        "DMART":      {"sector": "CONSUMER",       "tier": 1},
+        "ETERNAL":    {"sector": "CONSUMER",       "tier": 1},
+
+        # ── CONSUMER_ELECT (3) — wires, fans, electronics manufacturing ──────
+        "HAVELLS":    {"sector": "CONSUMER_ELECT", "tier": 1},
+        "POLYCAB":    {"sector": "CONSUMER_ELECT", "tier": 1},
+        "DIXON":      {"sector": "CONSUMER_ELECT", "tier": 1},
 
         # ── PHARMA (3) ───────────────────────────────────────────────────────
-        "SUNPHARMA":  {"sector": "PHARMA",       "tier": 1},
-        "CIPLA":      {"sector": "PHARMA",       "tier": 1},
-        "DRREDDY":    {"sector": "PHARMA",       "tier": 1},
+        "SUNPHARMA":  {"sector": "PHARMA",         "tier": 1},
+        "CIPLA":      {"sector": "PHARMA",         "tier": 1},
+        "DRREDDY":    {"sector": "PHARMA",         "tier": 1},
 
-        # ── HEALTHCARE (1) ───────────────────────────────────────────────────
-        "APOLLOHOSP": {"sector": "HEALTHCARE",   "tier": 1},
+        # ── HEALTHCARE (4) ───────────────────────────────────────────────────
+        "APOLLOHOSP": {"sector": "HEALTHCARE",     "tier": 1},
+        "MAXHEALTH":  {"sector": "HEALTHCARE",     "tier": 1},
+        "ALKEM":      {"sector": "HEALTHCARE",     "tier": 1},
+        "TORNTPHARM": {"sector": "HEALTHCARE",     "tier": 1},
 
         # ── METALS (3) ───────────────────────────────────────────────────────
-        "HINDALCO":   {"sector": "METALS",       "tier": 1},
-        "TATASTEEL":  {"sector": "METALS",       "tier": 1},
-        "JSWSTEEL":   {"sector": "METALS",       "tier": 1},
+        "HINDALCO":   {"sector": "METALS",         "tier": 1},
+        "TATASTEEL":  {"sector": "METALS",         "tier": 1},
+        "JSWSTEEL":   {"sector": "METALS",         "tier": 1},
+
+        # ── CHEMICALS (3) ────────────────────────────────────────────────────
+        "PIDILITIND": {"sector": "CHEMICALS",      "tier": 1},
+        "DEEPAKNTR":  {"sector": "CHEMICALS",      "tier": 1},
+        "PIIND":      {"sector": "CHEMICALS",      "tier": 1},
 
         # ── ENERGY (6) ───────────────────────────────────────────────────────
-        "RELIANCE":   {"sector": "ENERGY",       "tier": 1},
-        "ONGC":       {"sector": "ENERGY",       "tier": 1},
-        "NTPC":       {"sector": "ENERGY",       "tier": 1},
-        "POWERGRID":  {"sector": "ENERGY",       "tier": 1},
-        "COALINDIA":  {"sector": "ENERGY",       "tier": 1},
-        "BPCL":       {"sector": "ENERGY",       "tier": 1},
+        "RELIANCE":   {"sector": "ENERGY",         "tier": 1},
+        "ONGC":       {"sector": "ENERGY",         "tier": 1},
+        "NTPC":       {"sector": "ENERGY",         "tier": 1},
+        "POWERGRID":  {"sector": "ENERGY",         "tier": 1},
+        "COALINDIA":  {"sector": "ENERGY",         "tier": 1},
+        "BPCL":       {"sector": "ENERGY",         "tier": 1},
+
+        # ── POWER (3) — renewable/clean power separate from fossil ENERGY ────
+        "TATAPOWER":  {"sector": "POWER",          "tier": 1},
+        "NHPC":       {"sector": "POWER",          "tier": 1},
+        "IREDA":      {"sector": "POWER",          "tier": 1},
 
         # ── CEMENT (2) ───────────────────────────────────────────────────────
-        "ULTRACEMCO": {"sector": "CEMENT",       "tier": 1},
-        "GRASIM":     {"sector": "CEMENT",       "tier": 1},
+        "ULTRACEMCO": {"sector": "CEMENT",         "tier": 1},
+        "GRASIM":     {"sector": "CEMENT",         "tier": 1},
 
         # ── INFRA (2) ────────────────────────────────────────────────────────
-        "LT":         {"sector": "INFRA",        "tier": 1},
-        "ADANIPORTS": {"sector": "INFRA",        "tier": 1},
+        "LT":         {"sector": "INFRA",          "tier": 1},
+        "ADANIPORTS": {"sector": "INFRA",          "tier": 1},
+
+        # ── CAPGOODS (5) — industrial capital goods / automation ─────────────
+        "SIEMENS":    {"sector": "CAPGOODS",       "tier": 1},
+        "ABB":        {"sector": "CAPGOODS",       "tier": 1},
+        "CUMMINSIND": {"sector": "CAPGOODS",       "tier": 1},
+        "BHEL":       {"sector": "CAPGOODS",       "tier": 1},
+        "CGPOWER":    {"sector": "CAPGOODS",       "tier": 1},
+
+        # ── REALESTATE (3) ───────────────────────────────────────────────────
+        "DLF":        {"sector": "REALESTATE",     "tier": 1},
+        "GODREJPROP": {"sector": "REALESTATE",     "tier": 1},
+        "OBEROIRLTY": {"sector": "REALESTATE",     "tier": 1},
 
         # ── CONGLOMERATE (1) ─────────────────────────────────────────────────
-        "ADANIENT":   {"sector": "CONGLOMERATE", "tier": 1},
+        "ADANIENT":   {"sector": "CONGLOMERATE",   "tier": 1},
 
         # ── TELECOM (1) ──────────────────────────────────────────────────────
-        "BHARTIARTL": {"sector": "TELECOM",      "tier": 1},
+        "BHARTIARTL": {"sector": "TELECOM",        "tier": 1},
 
-        # ── DEFENCE (1) ──────────────────────────────────────────────────────
-        "BEL":        {"sector": "DEFENCE",      "tier": 1},
+        # ── DEFENCE (3) ──────────────────────────────────────────────────────
+        "BEL":        {"sector": "DEFENCE",        "tier": 1},
+        "HAL":        {"sector": "DEFENCE",        "tier": 1},
+        "SOLARINDS":  {"sector": "DEFENCE",        "tier": 1},
+
+        # ── RAILINFRA (2) — railway construction + financing PSUs ────────────
+        "RVNL":       {"sector": "RAILINFRA",      "tier": 1},
+        "IRFC":       {"sector": "RAILINFRA",      "tier": 1},
     }
 
     NIFTY_SYMBOL = "NIFTY 50"
 
     # NSE sector index names — used to pull sector-level FII activity
     SECTOR_INDICES = {
-        "BANKING":      "NIFTY BANK",
-        "FINANCE":      "NIFTY FIN SERVICE",
-        "INSURANCE":    "NIFTY FIN SERVICE",
-        "AUTO":         "NIFTY AUTO",
-        "FMCG":         "NIFTY FMCG",
-        "CONSUMER":     "NIFTY INDIA CONSUMPTION",
-        "PHARMA":       "NIFTY PHARMA",
-        "HEALTHCARE":   "NIFTY HEALTHCARE INDEX",
-        "METALS":       "NIFTY METAL",
-        "ENERGY":       "NIFTY ENERGY",
-        "CEMENT":       "NIFTY INFRA",
-        "INFRA":        "NIFTY INFRA",
-        "CONGLOMERATE": "NIFTY 500",
-        "TELECOM":      "NIFTY MEDIA",
-        "DEFENCE":      "NIFTY INDIA DEFENCE",
+        "BANKING":        "NIFTY BANK",
+        "FINANCE":        "NIFTY FIN SERVICE",
+        "INSURANCE":      "NIFTY FIN SERVICE",
+        "AUTO":           "NIFTY AUTO",
+        "AUTO_COMP":      "NIFTY AUTO",
+        "FMCG":           "NIFTY FMCG",
+        "CONSUMER":       "NIFTY INDIA CONSUMPTION",
+        "CONSUMER_ELECT": "NIFTY INDIA CONSUMPTION",
+        "PHARMA":         "NIFTY PHARMA",
+        "HEALTHCARE":     "NIFTY HEALTHCARE INDEX",
+        "METALS":         "NIFTY METAL",
+        "CHEMICALS":      "NIFTY CHEMICALS",
+        "ENERGY":         "NIFTY ENERGY",
+        "POWER":          "NIFTY ENERGY",
+        "CEMENT":         "NIFTY INFRA",
+        "INFRA":          "NIFTY INFRA",
+        "CAPGOODS":       "NIFTY INDIA MANUFACTURING",
+        "REALESTATE":     "NIFTY REALTY",
+        "CONGLOMERATE":   "NIFTY 500",
+        "TELECOM":        "NIFTY MEDIA",
+        "DEFENCE":        "NIFTY INDIA DEFENCE",
+        "RAILINFRA":      "NIFTY INFRASTRUCTURE",
     }
 
     @classmethod

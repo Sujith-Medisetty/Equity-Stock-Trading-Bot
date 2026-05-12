@@ -146,6 +146,62 @@ INSTRUMENT_KEYS = {
 
     # ── DEFENCE ──────────────────────────────────────────────────────────────
     "BEL":        "NSE_EQ|INE263A01024",
+    "HAL":        "NSE_EQ|INE066F01020",
+    "SOLARINDS":  "NSE_EQ|INE343H01029",
+
+    # ── RAILINFRA ────────────────────────────────────────────────────────────
+    "RVNL":       "NSE_EQ|INE415G01027",
+    "IRFC":       "NSE_EQ|INE053F01010",
+
+    # ── FINANCE (new additions) ───────────────────────────────────────────────
+    "MUTHOOTFIN": "NSE_EQ|INE414G01012",
+    "CHOLAFIN":   "NSE_EQ|INE121A01024",
+
+    # ── AUTO (new addition) ───────────────────────────────────────────────────
+    "TVSMOTOR":   "NSE_EQ|INE494B01023",
+
+    # ── AUTO_COMP ────────────────────────────────────────────────────────────
+    "MOTHERSON":  "NSE_EQ|INE775A01035",
+    "MRF":        "NSE_EQ|INE883A01011",
+    "TIINDIA":    "NSE_EQ|INE974X01010",
+    "BOSCHLTD":   "NSE_EQ|INE323A01026",
+
+    # ── CONSUMER (new additions) ──────────────────────────────────────────────
+    "PAGEIND":    "NSE_EQ|INE761H01022",
+    "DMART":      "NSE_EQ|INE192R01011",
+    "ETERNAL":    "NSE_EQ|INE758T01015",
+
+    # ── CONSUMER_ELECT ───────────────────────────────────────────────────────
+    "HAVELLS":    "NSE_EQ|INE176B01034",
+    "POLYCAB":    "NSE_EQ|INE455K01017",
+    "DIXON":      "NSE_EQ|INE935N01020",
+
+    # ── HEALTHCARE (new additions) ────────────────────────────────────────────
+    "MAXHEALTH":  "NSE_EQ|INE027H01010",
+    "ALKEM":      "NSE_EQ|INE540L01014",
+    "TORNTPHARM": "NSE_EQ|INE685A01028",
+
+    # ── CHEMICALS ────────────────────────────────────────────────────────────
+    "PIDILITIND": "NSE_EQ|INE318A01026",
+    "DEEPAKNTR":  "NSE_EQ|INE288B01029",
+    "PIIND":      "NSE_EQ|INE603J01030",
+
+    # ── POWER ────────────────────────────────────────────────────────────────
+    "TATAPOWER":  "NSE_EQ|INE245A01021",
+    "NHPC":       "NSE_EQ|INE848E01016",
+    "IREDA":      "NSE_EQ|INE202E01016",
+
+    # ── CAPGOODS ─────────────────────────────────────────────────────────────
+    "SIEMENS":    "NSE_EQ|INE003A01024",
+    "ABB":        "NSE_EQ|INE117A01022",
+    "CUMMINSIND": "NSE_EQ|INE298A01020",
+    "BHEL":       "NSE_EQ|INE257A01026",
+    "CGPOWER":    "NSE_EQ|INE067A01029",
+
+    # ── REALESTATE ───────────────────────────────────────────────────────────
+    "DLF":        "NSE_EQ|INE271C01023",
+    "GODREJPROP": "NSE_EQ|INE484J01027",
+    "OBEROIRLTY": "NSE_EQ|INE093I01010",
 
     # ── INDEX ────────────────────────────────────────────────────────────────
     "NIFTY 50":   "NSE_INDEX|Nifty 50",

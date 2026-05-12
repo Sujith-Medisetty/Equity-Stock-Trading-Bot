@@ -971,19 +971,20 @@ class BacktestEngine:
         elif setup.strategy == StrategyType.WEEK52:
             sl = data.week_52_high - (atr * 1.5)
         elif setup.strategy == StrategyType.PULLBACK:
-            sl = data.ema_20 - (atr * 1.5)
+            sl = data.ema_20 - (atr * Config.ATR_MULT.get("PULLBACK", 1.5))
 
         risk_per_share = entry - sl
         if risk_per_share <= 0:
             return None
 
-        target = entry + risk_per_share * Config.MIN_RR_RATIO
+        min_rr = Config.PULLBACK_MIN_RR if setup.strategy == StrategyType.PULLBACK else Config.MIN_RR_RATIO
+        target = entry + risk_per_share * min_rr
 
         # FVG target override for SWING / PULLBACK
         if (setup.strategy in (StrategyType.PULLBACK, StrategyType.SWING)
                 and data.fvg_target > entry):
             fvg_rr = (data.fvg_target - entry) / risk_per_share
-            if fvg_rr >= Config.MIN_RR_RATIO and data.fvg_target > target:
+            if fvg_rr >= min_rr and data.fvg_target > target:
                 target = data.fvg_target
 
         shares = int(max_risk / risk_per_share)
@@ -1001,7 +1002,7 @@ class BacktestEngine:
             return None
 
         rr = (target - entry) / risk_per_share
-        if rr < Config.MIN_RR_RATIO:
+        if rr < min_rr:
             return None
 
         setup.sl_price         = round(sl, 2)

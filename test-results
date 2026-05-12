@@ -1,0 +1,505 @@
+2026-05-12 14:45:09,018 | INFO | Screening: 65/79 passed
+2026-05-12 14:45:09,034 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.2
+2026-05-12 14:45:09,050 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.3
+2026-05-12 14:45:09,065 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.3
+2026-05-12 14:45:09,080 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.4
+2026-05-12 14:45:09,095 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.4
+2026-05-12 14:45:09,111 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.4
+2026-05-12 14:45:09,127 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.6
+2026-05-12 14:45:09,141 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.2
+2026-05-12 14:45:09,156 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.3
+2026-05-12 14:45:09,171 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.0
+2026-05-12 14:45:09,187 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.2
+2026-05-12 14:45:09,202 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.7
+2026-05-12 14:45:09,226 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.0
+2026-05-12 14:45:09,241 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.0
+2026-05-12 14:45:09,256 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.0
+2026-05-12 14:45:09,271 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.3
+2026-05-12 14:45:09,286 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.5
+2026-05-12 14:45:09,301 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 13.9
+2026-05-12 14:45:09,316 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.0
+2026-05-12 14:45:09,331 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.6
+2026-05-12 14:45:09,345 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.4
+2026-05-12 14:45:09,360 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.4
+2026-05-12 14:45:09,374 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.8
+2026-05-12 14:45:10,092 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:10,107 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.5
+2026-05-12 14:45:10,810 | INFO | Screening: 57/79 passed
+2026-05-12 14:45:10,825 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.5
+2026-05-12 14:45:10,840 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.3
+2026-05-12 14:45:10,856 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.6
+2026-05-12 14:45:10,871 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.5
+2026-05-12 14:45:10,886 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.4
+2026-05-12 14:45:10,901 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.3
+2026-05-12 14:45:10,916 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.2
+2026-05-12 14:45:10,930 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.3
+2026-05-12 14:45:10,945 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.1
+2026-05-12 14:45:10,960 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.0
+2026-05-12 14:45:10,975 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.9
+2026-05-12 14:45:11,000 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.3
+2026-05-12 14:45:11,015 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.7
+2026-05-12 14:45:11,030 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.1
+2026-05-12 14:45:11,044 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 9.9
+2026-05-12 14:45:11,060 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:11,074 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.6
+2026-05-12 14:45:11,089 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:11,106 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:45:11,141 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:11,161 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:11,177 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:11,192 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 10.4
+2026-05-12 14:45:11,207 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:45:11,207 | INFO |   … day 50/248  open=0  closed=0  capital=₹200,000
+2026-05-12 14:45:11,222 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:45:11,237 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 9.8
+2026-05-12 14:45:11,253 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.1
+2026-05-12 14:45:11,268 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.2
+2026-05-12 14:45:11,283 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.0
+2026-05-12 14:45:11,299 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.1
+2026-05-12 14:45:11,315 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.8
+2026-05-12 14:45:12,043 | INFO | Screening: 62/79 passed
+2026-05-12 14:45:12,059 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.6
+2026-05-12 14:45:12,804 | INFO | Screening: 66/79 passed
+2026-05-12 14:45:12,820 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.3
+2026-05-12 14:45:13,580 | INFO | Screening: 62/79 passed
+2026-05-12 14:45:13,595 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.3
+2026-05-12 14:45:14,372 | INFO | Screening: 65/79 passed
+2026-05-12 14:45:14,388 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 12.4
+2026-05-12 14:45:15,169 | INFO | Screening: 62/79 passed
+2026-05-12 14:45:15,186 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.6
+2026-05-12 14:45:15,204 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.7
+2026-05-12 14:45:15,221 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 11.8
+2026-05-12 14:45:15,238 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 12.8
+2026-05-12 14:45:15,255 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 17.1
+2026-05-12 14:45:15,272 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 18.2
+2026-05-12 14:45:15,288 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 18.2
+2026-05-12 14:45:15,305 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 19.4
+2026-05-12 14:45:15,321 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 20.7
+2026-05-12 14:45:15,338 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 20.6
+2026-05-12 14:45:16,138 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:16,155 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 21.3
+2026-05-12 14:45:16,984 | INFO | Screening: 57/79 passed
+2026-05-12 14:45:17,001 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 21.1
+2026-05-12 14:45:17,835 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:17,851 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 21.1
+2026-05-12 14:45:18,682 | INFO | Screening: 60/79 passed
+2026-05-12 14:45:18,699 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 20.9
+2026-05-12 14:45:19,550 | INFO | Screening: 64/79 passed
+2026-05-12 14:45:19,567 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 20.9
+2026-05-12 14:45:20,433 | INFO | Screening: 61/79 passed
+2026-05-12 14:45:20,450 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 20.8
+2026-05-12 14:45:21,323 | INFO | Screening: 62/79 passed
+2026-05-12 14:45:21,340 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 21.1
+2026-05-12 14:45:22,214 | INFO | Screening: 53/79 passed
+2026-05-12 14:45:22,223 | INFO | [BT 2025-04-28] ENTER HAL SWING ×5 @ ₹4481.95 (open ₹4473.00 +0.2% slip)  SL=₹4138.19  T=₹5146.57
+2026-05-12 14:45:22,231 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 20.9
+2026-05-12 14:45:23,078 | INFO | Screening: 53/79 passed
+2026-05-12 14:45:23,096 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 20.8
+2026-05-12 14:45:23,951 | INFO | Screening: 62/79 passed
+2026-05-12 14:45:23,968 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 20.8
+2026-05-12 14:45:24,835 | INFO | Screening: 60/79 passed
+2026-05-12 14:45:24,852 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 19.9
+2026-05-12 14:45:25,726 | INFO | Screening: 54/79 passed
+2026-05-12 14:45:25,744 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 19.9
+2026-05-12 14:45:26,627 | INFO | Screening: 52/79 passed
+2026-05-12 14:45:26,654 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 19.8
+2026-05-12 14:45:27,554 | INFO | Screening: 54/79 passed
+2026-05-12 14:45:27,572 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 19.0
+2026-05-12 14:45:28,481 | INFO | Screening: 61/79 passed
+2026-05-12 14:45:28,499 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 14.9
+2026-05-12 14:45:29,417 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:29,436 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 18.4
+2026-05-12 14:45:30,357 | INFO | Screening: 55/79 passed
+2026-05-12 14:45:30,375 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 19.2
+2026-05-12 14:45:31,314 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:31,333 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 18.5
+2026-05-12 14:45:32,289 | INFO | Screening: 56/79 passed
+2026-05-12 14:45:32,317 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.9
+2026-05-12 14:45:33,286 | INFO | Screening: 61/79 passed
+2026-05-12 14:45:33,295 | INFO | [BT 2025-05-15] HAL T2 PARTIAL: sold 2× @ ₹5136.28  remaining=3  new SL=₹4970.58
+2026-05-12 14:45:33,304 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 18.0
+2026-05-12 14:45:34,298 | INFO | Screening: 56/79 passed
+2026-05-12 14:45:34,316 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.3
+2026-05-12 14:45:35,284 | INFO | Screening: 50/79 passed
+2026-05-12 14:45:35,294 | INFO | [BT 2025-05-19] CLOSE HAL [SL_HIT_GAP] 21d  avg_exit=₹5024.51  net=+₹2,629  tier=T2
+2026-05-12 14:45:35,303 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.5
+2026-05-12 14:45:36,289 | INFO | Screening: 63/79 passed
+2026-05-12 14:45:36,307 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.5
+2026-05-12 14:45:37,226 | INFO | Screening: 52/79 passed
+2026-05-12 14:45:37,244 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.7
+2026-05-12 14:45:38,135 | INFO | Screening: 63/79 passed
+2026-05-12 14:45:38,154 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.9
+2026-05-12 14:45:39,040 | INFO | Screening: 45/79 passed
+2026-05-12 14:45:39,059 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.6
+2026-05-12 14:45:39,930 | INFO | Screening: 49/79 passed
+2026-05-12 14:45:39,949 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.5
+2026-05-12 14:45:40,821 | INFO | Screening: 57/79 passed
+2026-05-12 14:45:40,839 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.6
+2026-05-12 14:45:41,721 | INFO | Screening: 54/79 passed
+2026-05-12 14:45:41,740 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.6
+2026-05-12 14:45:42,625 | INFO | Screening: 58/79 passed
+2026-05-12 14:45:42,625 | INFO |   … day 100/248  open=0  closed=1  capital=₹202,629
+2026-05-12 14:45:42,644 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.6
+2026-05-12 14:45:43,533 | INFO | Screening: 66/79 passed
+2026-05-12 14:45:43,551 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.6
+2026-05-12 14:45:44,450 | INFO | Screening: 53/79 passed
+2026-05-12 14:45:44,469 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 17.8
+2026-05-12 14:45:45,354 | INFO | Screening: 56/79 passed
+2026-05-12 14:45:45,372 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 17.8
+2026-05-12 14:45:46,249 | INFO | Screening: 60/79 passed
+2026-05-12 14:45:46,267 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.7
+2026-05-12 14:45:47,155 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:47,173 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 17.4
+2026-05-12 14:45:48,063 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:48,082 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 11.8
+2026-05-12 14:45:48,979 | INFO | Screening: 56/79 passed
+2026-05-12 14:45:48,998 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:49,910 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:49,929 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.5
+2026-05-12 14:45:50,863 | INFO | Screening: 57/79 passed
+2026-05-12 14:45:50,882 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.7
+2026-05-12 14:45:51,837 | INFO | Screening: 57/79 passed
+2026-05-12 14:45:51,856 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.9
+2026-05-12 14:45:52,803 | INFO | Screening: 59/79 passed
+2026-05-12 14:45:52,823 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.4
+2026-05-12 14:45:53,711 | INFO | Screening: 56/79 passed
+2026-05-12 14:45:53,731 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.8
+2026-05-12 14:45:54,616 | INFO | Screening: 51/79 passed
+2026-05-12 14:45:54,636 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.7
+2026-05-12 14:45:55,525 | INFO | Screening: 52/79 passed
+2026-05-12 14:45:55,545 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.2
+2026-05-12 14:45:56,418 | INFO | Screening: 56/79 passed
+2026-05-12 14:45:56,437 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:45:57,307 | INFO | Screening: 65/79 passed
+2026-05-12 14:45:57,326 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:45:58,185 | INFO | Screening: 49/79 passed
+2026-05-12 14:45:58,203 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.3
+2026-05-12 14:45:59,019 | INFO | Screening: 61/79 passed
+2026-05-12 14:45:59,036 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:45:59,838 | INFO | Screening: 61/79 passed
+2026-05-12 14:45:59,855 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.3
+2026-05-12 14:46:00,654 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:00,671 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.2
+2026-05-12 14:46:01,461 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:01,477 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.4
+2026-05-12 14:46:02,255 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:02,272 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.9
+2026-05-12 14:46:03,060 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:03,087 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.1
+2026-05-12 14:46:03,891 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:03,907 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 10.0
+2026-05-12 14:46:04,723 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:04,740 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:05,549 | INFO | Screening: 42/79 passed
+2026-05-12 14:46:05,565 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:06,388 | INFO | Screening: 39/79 passed
+2026-05-12 14:46:06,405 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:07,229 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:07,246 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:08,082 | INFO | Screening: 53/79 passed
+2026-05-12 14:46:08,099 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.9
+2026-05-12 14:46:08,929 | INFO | Screening: 53/79 passed
+2026-05-12 14:46:08,945 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.1
+2026-05-12 14:46:09,781 | INFO | Screening: 58/79 passed
+2026-05-12 14:46:09,798 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.6
+2026-05-12 14:46:10,623 | INFO | Screening: 59/79 passed
+2026-05-12 14:46:10,640 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.6
+2026-05-12 14:46:11,467 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:11,484 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.5
+2026-05-12 14:46:12,318 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:12,335 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.7
+2026-05-12 14:46:13,174 | INFO | Screening: 47/79 passed
+2026-05-12 14:46:13,189 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:46:14,006 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:14,023 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:46:14,835 | INFO | Screening: 51/79 passed
+2026-05-12 14:46:14,851 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:46:15,664 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:15,680 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.4
+2026-05-12 14:46:16,492 | INFO | Screening: 52/79 passed
+2026-05-12 14:46:16,508 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 6.3
+2026-05-12 14:46:17,313 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:17,329 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 6.7
+2026-05-12 14:46:18,131 | INFO | Screening: 62/79 passed
+2026-05-12 14:46:18,147 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 6.8
+2026-05-12 14:46:18,163 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:46:18,939 | INFO | Screening: 62/79 passed
+2026-05-12 14:46:18,955 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:46:19,723 | INFO | Screening: 59/79 passed
+2026-05-12 14:46:19,739 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 7.3
+2026-05-12 14:46:20,496 | INFO | Screening: 65/79 passed
+2026-05-12 14:46:20,512 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 7.5
+2026-05-12 14:46:20,527 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 8.0
+2026-05-12 14:46:21,287 | INFO | Screening: 58/79 passed
+2026-05-12 14:46:21,304 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:46:22,054 | INFO | Screening: 61/79 passed
+2026-05-12 14:46:22,070 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:46:22,086 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:46:22,086 | INFO |   … day 150/248  open=0  closed=1  capital=₹202,629
+2026-05-12 14:46:22,113 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 8.1
+2026-05-12 14:46:22,129 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 8.8
+2026-05-12 14:46:22,872 | INFO | Screening: 59/79 passed
+2026-05-12 14:46:22,887 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 8.7
+2026-05-12 14:46:22,903 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.0
+2026-05-12 14:46:23,651 | INFO | Screening: 57/79 passed
+2026-05-12 14:46:23,666 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 8.9
+2026-05-12 14:46:24,403 | INFO | Screening: 58/79 passed
+2026-05-12 14:46:24,420 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:25,164 | INFO | Screening: 64/79 passed
+2026-05-12 14:46:25,180 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.4
+2026-05-12 14:46:25,931 | INFO | Screening: 60/79 passed
+2026-05-12 14:46:25,947 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:26,682 | INFO | Screening: 57/79 passed
+2026-05-12 14:46:26,699 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.2
+2026-05-12 14:46:27,449 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:27,465 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.4
+2026-05-12 14:46:28,239 | INFO | Screening: 53/79 passed
+2026-05-12 14:46:28,255 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 9.0
+2026-05-12 14:46:29,024 | INFO | Screening: 55/79 passed
+2026-05-12 14:46:29,040 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:29,807 | INFO | Screening: 65/79 passed
+2026-05-12 14:46:29,823 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.7
+2026-05-12 14:46:30,594 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:30,610 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 9.7
+2026-05-12 14:46:30,626 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 10.1
+2026-05-12 14:46:31,404 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:31,420 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.7
+2026-05-12 14:46:32,195 | INFO | Screening: 60/79 passed
+2026-05-12 14:46:32,211 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:46:32,988 | INFO | Screening: 60/79 passed
+2026-05-12 14:46:33,004 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.6
+2026-05-12 14:46:33,778 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:33,794 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:34,584 | INFO | Screening: 51/79 passed
+2026-05-12 14:46:34,599 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 9.5
+2026-05-12 14:46:35,379 | INFO | Screening: 49/79 passed
+2026-05-12 14:46:35,395 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.9
+2026-05-12 14:46:36,187 | INFO | Screening: 58/79 passed
+2026-05-12 14:46:36,203 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.5
+2026-05-12 14:46:36,990 | INFO | Screening: 62/79 passed
+2026-05-12 14:46:37,006 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.3
+2026-05-12 14:46:37,801 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:37,816 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:46:38,619 | INFO | Screening: 52/79 passed
+2026-05-12 14:46:38,636 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.3
+2026-05-12 14:46:39,456 | INFO | Screening: 57/79 passed
+2026-05-12 14:46:39,472 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:46:40,296 | INFO | Screening: 62/79 passed
+2026-05-12 14:46:40,306 | INFO | [BT 2025-09-16] ENTER NHPC SWING ×401 @ ₹88.48 (open ₹88.30 +0.2% slip)  SL=₹84.87  T=₹97.95
+2026-05-12 14:46:40,313 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:46:41,136 | INFO | Screening: 55/79 passed
+2026-05-12 14:46:41,153 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:46:42,000 | INFO | Screening: 59/79 passed
+2026-05-12 14:46:42,017 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.1
+2026-05-12 14:46:42,864 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:42,882 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:46:43,719 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:43,736 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:46:44,550 | INFO | Screening: 57/79 passed
+2026-05-12 14:46:44,567 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.8
+2026-05-12 14:46:45,390 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:45,406 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 6.5
+2026-05-12 14:46:46,233 | INFO | Screening: 60/79 passed
+2026-05-12 14:46:46,243 | INFO | [BT 2025-09-25] CLOSE NHPC [SL_HIT] 9d  avg_exit=₹84.70  net=₹-1,609  tier=T0
+2026-05-12 14:46:46,251 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 7.3
+2026-05-12 14:46:46,267 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 6.7
+2026-05-12 14:46:46,284 | INFO | Market Mode: DEFENSIVE | FII: NEUTRAL | VIX: 6.7
+2026-05-12 14:46:46,300 | INFO | Market Mode: CAUTIOUS | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:46:47,164 | INFO | Screening: 59/79 passed
+2026-05-12 14:46:47,180 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:46:48,046 | INFO | Screening: 63/79 passed
+2026-05-12 14:46:48,063 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:46:48,953 | INFO | Screening: 52/79 passed
+2026-05-12 14:46:48,970 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:46:49,821 | INFO | Screening: 61/79 passed
+2026-05-12 14:46:49,838 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:46:50,681 | INFO | Screening: 62/79 passed
+2026-05-12 14:46:50,698 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:46:51,541 | INFO | Screening: 57/79 passed
+2026-05-12 14:46:51,558 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.8
+2026-05-12 14:46:52,400 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:52,421 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:46:53,267 | INFO | Screening: 54/79 passed
+2026-05-12 14:46:53,284 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.8
+2026-05-12 14:46:54,117 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:54,135 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.8
+2026-05-12 14:46:54,961 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:54,979 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.5
+2026-05-12 14:46:55,810 | INFO | Screening: 61/79 passed
+2026-05-12 14:46:55,828 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.6
+2026-05-12 14:46:56,630 | INFO | Screening: 58/79 passed
+2026-05-12 14:46:56,661 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.5
+2026-05-12 14:46:57,484 | INFO | Screening: 56/79 passed
+2026-05-12 14:46:57,502 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.3
+2026-05-12 14:46:58,311 | INFO | Screening: 0/79 passed
+2026-05-12 14:46:58,311 | INFO |   … day 200/248  open=0  closed=2  capital=₹201,021
+2026-05-12 14:46:58,329 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:46:59,156 | INFO | Screening: 64/79 passed
+2026-05-12 14:46:59,174 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:46:59,991 | INFO | Screening: 59/79 passed
+2026-05-12 14:47:00,009 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.8
+2026-05-12 14:47:00,806 | INFO | Screening: 56/79 passed
+2026-05-12 14:47:00,824 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.7
+2026-05-12 14:47:01,631 | INFO | Screening: 65/79 passed
+2026-05-12 14:47:01,649 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.6
+2026-05-12 14:47:02,436 | INFO | Screening: 58/79 passed
+2026-05-12 14:47:02,454 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.3
+2026-05-12 14:47:03,258 | INFO | Screening: 57/79 passed
+2026-05-12 14:47:03,276 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.4
+2026-05-12 14:47:04,084 | INFO | Screening: 63/79 passed
+2026-05-12 14:47:04,102 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.4
+2026-05-12 14:47:04,935 | INFO | Screening: 58/79 passed
+2026-05-12 14:47:04,953 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:47:05,770 | INFO | Screening: 64/79 passed
+2026-05-12 14:47:05,788 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.8
+2026-05-12 14:47:06,631 | INFO | Screening: 65/79 passed
+2026-05-12 14:47:06,649 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:47:07,483 | INFO | Screening: 62/79 passed
+2026-05-12 14:47:07,501 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:47:08,338 | INFO | Screening: 62/79 passed
+2026-05-12 14:47:08,356 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:47:09,194 | INFO | Screening: 61/79 passed
+2026-05-12 14:47:09,212 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.8
+2026-05-12 14:47:10,028 | INFO | Screening: 64/79 passed
+2026-05-12 14:47:10,049 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:47:10,858 | INFO | Screening: 63/79 passed
+2026-05-12 14:47:10,878 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.4
+2026-05-12 14:47:11,682 | INFO | Screening: 60/79 passed
+2026-05-12 14:47:11,701 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.7
+2026-05-12 14:47:12,512 | INFO | Screening: 63/79 passed
+2026-05-12 14:47:12,531 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.7
+2026-05-12 14:47:13,333 | INFO | Screening: 63/79 passed
+2026-05-12 14:47:13,364 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.8
+2026-05-12 14:47:14,168 | INFO | Screening: 60/79 passed
+2026-05-12 14:47:14,187 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.0
+2026-05-12 14:47:14,991 | INFO | Screening: 58/79 passed
+2026-05-12 14:47:15,001 | INFO | [BT 2025-11-20] ENTER EICHERMOT SWING ×5 @ ₹7139.75 (open ₹7125.50 +0.2% slip)  SL=₹6839.79  T=₹7839.78
+2026-05-12 14:47:15,012 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:15,813 | INFO | Screening: 45/79 passed
+2026-05-12 14:47:15,832 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:16,615 | INFO | Screening: 58/79 passed
+2026-05-12 14:47:16,634 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 6.9
+2026-05-12 14:47:17,399 | INFO | Screening: 54/79 passed
+2026-05-12 14:47:17,418 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:47:18,190 | INFO | Screening: 49/79 passed
+2026-05-12 14:47:18,209 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.0
+2026-05-12 14:47:18,969 | INFO | Screening: 53/79 passed
+2026-05-12 14:47:18,979 | INFO | [BT 2025-11-27] ENTER MOTHERSON SWING ×256 @ ₹116.87 (open ₹116.64 +0.2% slip)  SL=₹110.27  T=₹130.77
+2026-05-12 14:47:18,989 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:47:19,750 | INFO | Screening: 43/79 passed
+2026-05-12 14:47:19,770 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:20,547 | INFO | Screening: 45/79 passed
+2026-05-12 14:47:20,567 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.6
+2026-05-12 14:47:21,330 | INFO | Screening: 52/79 passed
+2026-05-12 14:47:21,351 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:22,119 | INFO | Screening: 49/79 passed
+2026-05-12 14:47:22,140 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.0
+2026-05-12 14:47:22,902 | INFO | Screening: 48/79 passed
+2026-05-12 14:47:22,922 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:23,702 | INFO | Screening: 45/79 passed
+2026-05-12 14:47:23,711 | INFO | [BT 2025-12-07] ENTER SHRIRAMFIN SWING ×38 @ ₹860.22 (open ₹858.50 +0.2% slip)  SL=₹816.20  T=₹951.64
+2026-05-12 14:47:23,722 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:47:24,487 | INFO | Screening: 45/79 passed
+2026-05-12 14:47:24,508 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.0
+2026-05-12 14:47:25,287 | INFO | Screening: 48/79 passed
+2026-05-12 14:47:25,308 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:47:26,091 | INFO | Screening: 45/79 passed
+2026-05-12 14:47:26,111 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:47:26,893 | INFO | Screening: 36/79 passed
+2026-05-12 14:47:26,926 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:47:27,701 | INFO | Screening: 41/79 passed
+2026-05-12 14:47:27,721 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.1
+2026-05-12 14:47:28,487 | INFO | Screening: 37/79 passed
+2026-05-12 14:47:28,505 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.3
+2026-05-12 14:47:29,266 | INFO | Screening: 42/79 passed
+2026-05-12 14:47:29,284 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 8.0
+2026-05-12 14:47:30,034 | INFO | Screening: 42/79 passed
+2026-05-12 14:47:30,053 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.7
+2026-05-12 14:47:30,802 | INFO | Screening: 40/79 passed
+2026-05-12 14:47:30,820 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.9
+2026-05-12 14:47:31,565 | INFO | Screening: 50/79 passed
+2026-05-12 14:47:31,583 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:47:32,326 | INFO | Screening: 44/79 passed
+2026-05-12 14:47:32,335 | INFO | [BT 2025-12-22] SHRIRAMFIN T2 PARTIAL: sold 19× @ ₹949.74  remaining=19  new SL=₹935.62
+2026-05-12 14:47:32,344 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 8.2
+2026-05-12 14:47:33,088 | INFO | Screening: 44/79 passed
+2026-05-12 14:47:33,098 | INFO | [BT 2025-12-23] CLOSE SHRIRAMFIN [TRAILING_SL] 16d  avg_exit=₹954.33  net=+₹3,469  tier=T2
+2026-05-12 14:47:33,107 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.0
+2026-05-12 14:47:33,876 | INFO | Screening: 49/79 passed
+2026-05-12 14:47:33,894 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.1
+2026-05-12 14:47:34,640 | INFO | Screening: 40/79 passed
+2026-05-12 14:47:34,657 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:35,396 | INFO | Screening: 47/79 passed
+2026-05-12 14:47:35,413 | INFO | Market Mode: SELECTIVE | FII: NEUTRAL | VIX: 7.2
+2026-05-12 14:47:36,160 | INFO | Screening: 52/79 passed
+2026-05-12 14:47:36,185 | INFO | Market Mode: NORMAL | FII: NEUTRAL | VIX: 7.4
+2026-05-12 14:47:36,931 | INFO | Screening: 47/79 passed
+2026-05-12 14:47:36,931 | INFO | [BT 2025-12-30] CLOSE EICHERMOT [BT_END_FORCE_CLOSE] 40d  avg_exit=₹7178.11  net=+₹97  tier=T0
+2026-05-12 14:47:36,931 | INFO | [BT 2025-12-30] CLOSE MOTHERSON [BT_END_FORCE_CLOSE] 33d  avg_exit=₹119.51  net=+₹593  tier=T0
+2026-05-12 14:47:36,931 | INFO | [BACKTEST] Done: 5 trades, final capital ₹205,180
+
+==========================================================================
+  BACKTEST RESULTS  (Real Upstox Data — No Lookahead)
+==========================================================================
+  Period  : 2025-01-01  →  2025-12-31
+  Capital : ₹     200,000  (starting)
+  Final   : ₹     205,180
+  Return  : ₹      +5,180  (+2.6%)
+  Days    : 248  |  Signals found: 5  |  Executed: 5
+
+──────────────────────────────────────────────────────────────────────────
+  TRADE STATISTICS
+──────────────────────────────────────────────────────────────────────────
+  Total trades : 5  (4 wins / 1 losses)
+  Win rate     : 80.0%  (need >50% to be consistently profitable)
+  Avg win      : ₹ +1,697.08
+  Avg loss     : ₹ -1,608.62
+  Real R:R     : 1.05:1  [Low]  (target ≥ 2.0:1)
+  Avg hold     : 23.8 days
+  Gross P&L    : ₹   +5,641.04
+  Charges paid : ₹      461.35
+  Net P&L      : ₹   +5,179.69  ← what you actually made/lost
+
+──────────────────────────────────────────────────────────────────────────
+  STRATEGY BREAKDOWN
+──────────────────────────────────────────────────────────────────────────
+  Strategy     Trades    Win%       Net P&L  Verdict
+  ──────────── ──────  ──────  ────────────  ──────────────────
+  SWING             5   80.0%  ₹      5,180  Working
+
+──────────────────────────────────────────────────────────────────────────
+  EXIT REASONS
+──────────────────────────────────────────────────────────────────────────
+    2×  Force closed at backtest end
+    1×  Stop loss hit (gap down at open)
+    1×  Stop loss hit (intraday)
+    1×  Tier 3 trail SL hit
+
+──────────────────────────────────────────────────────────────────────────
+  TIER BREAKDOWN  (how far each trade progressed)
+──────────────────────────────────────────────────────────────────────────
+    3×  T0 — exited before reaching breakeven (SL or time)
+    0×  T1 — SL moved to entry (breakeven protected)
+    2×  T2 — 50% profit locked, trailed remainder
+
+──────────────────────────────────────────────────────────────────────────
+  MONTHLY P&L
+──────────────────────────────────────────────────────────────────────────
+  Month       Trades    Win%      Net P&L    Cumulative
+  ──────────  ──────  ──────  ───────────  ────────────
+  2025-05          1  100.0%  ▲₹    2,629  ₹     +2,629
+  2025-09          1    0.0%  ▼₹    1,609  ₹     +1,021
+  2025-12          3  100.0%  ▲₹    4,159  ₹     +5,180
+
+──────────────────────────────────────────────────────────────────────────
+  TAX ESTIMATE (India STCG — all trades < 1 year = Short-Term)
+──────────────────────────────────────────────────────────────────────────
+  Total net P&L   : ₹   +5,179.69
+  Taxable STCG    : ₹    5,179.69  (0 if net is negative)
+  STCG rate       : 20%  (post July 23, 2024 budget)
+  ┌─────────────────────────────────────────────────────┐
+  │  ESTIMATED TAX : ₹  1,035.94                    │
+  └─────────────────────────────────────────────────────┘
+  Charges (₹461) already deducted from net P&L above.
+  This is a planning estimate — consult a CA for actual filing.
+==========================================================================

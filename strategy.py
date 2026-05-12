@@ -132,6 +132,12 @@ class StrategyEngine:
         if data.candle_pattern != "MARUBOZU":
             return None
 
+        # Relative strength gate: SWING is a momentum continuation strategy — only enter
+        # stocks already outperforming Nifty. Buying a laggard on a MARUBOZU is chasing
+        # a dead-cat bounce, not a momentum continuation.
+        if data.rs_score <= 0:
+            return None
+
         # Hard gate: ADX > 22 confirms the trend is REAL, not a one-day spike in a ranging stock.
         # A MARUBOZU in a ranging stock (ADX < 22) is often an overreaction — 50% chance of reversal.
         # ADX > 22 means directional momentum has been building across many sessions.
@@ -277,6 +283,13 @@ class StrategyEngine:
         # there's no institutional directional momentum behind the move. The "pullback"
         # is just random oscillation within a sideways range, not a retracement in a trend.
         if data.adx > 0 and data.adx < 16:
+            return None
+
+        # Relative strength gate: never buy a stock underperforming Nifty over 60 days.
+        # rs_score <= 0 = stock has returned less than Nifty — buying a laggard "hoping for
+        # a catch-up" is a documented losing pattern in Indian markets (academic research on
+        # Nifty 200/500 momentum confirms: all edge is in outperformers, not laggards).
+        if data.rs_score <= 0:
             return None
 
         # Candle range quality: close must be in upper 55%+ of today's high-low range.
