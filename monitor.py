@@ -442,36 +442,36 @@ class TradeMonitor:
             return  # invalid trade data — skip (shouldn't happen but guard anyway)
 
         # ============================================================
-        # TIER 1: Move SL to breakeven when price reaches 1:1 profit
-        # Condition: price >= entry + risk (i.e. profit equals our risk amount)
-        # Action: SL moves up to entry price (breakeven)
-        # Effect: from this point on, worst case = 0 loss (not counting charges)
+        # TIER 1: Move SL to entry + 12% of risk when 1:1 profit reached.
+        # Breakeven exits (SL = entry) net ₹0 gross / -₹96 after charges.
+        # Locking 12% of risk (~₹180 gross on ₹1,500 risk) = ~₹85 net — beats a loss.
         # ============================================================
         if not trade["tier1_done"] and price >= entry + risk and sl < entry:
-            log.info(f"TIER 1 → Breakeven: {trade['symbol']}")
-            self.db.update_trade_sl(trade_id, entry)   # move SL to entry in DB
-            self.db.log_trailing_sl(trade_id, sl, entry, price, "TIER1_BREAKEVEN")  # audit log
+            t1_sl = entry + risk * 0.12
+            log.info(f"TIER 1 → MinProfit: {trade['symbol']} SL → ₹{t1_sl:.2f}")
+            self.db.update_trade_sl(trade_id, t1_sl)
+            self.db.log_trailing_sl(trade_id, sl, t1_sl, price, "TIER1_MIN_PROFIT")
             # Mark tier1 as done and record the price at which it triggered
             self.db.execute("UPDATE trades SET tier1_done=1, tier1_price=? WHERE trade_id=?",
                             (price, trade_id))
-            # Cancel the old SL order at the broker and place a new one at entry price
-            new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, entry, trade["sl_order_id"])
+            # Cancel the old SL order at the broker and place a new one at the min-profit SL
+            new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, t1_sl, trade["sl_order_id"])
             if new_id:
                 self.db.update_sl_order_id(trade_id, new_id)  # store new order ID for next cancel+replace
 
         # ============================================================
         # TIER 1.5: Adaptive trail between breakeven and target
         # Condition: tier1 done, tier2 not yet done, price between entry and target
-        # Action: SL = entry + 50% of current gain above entry
-        # Effect: as price rises, SL locks in 50% of each new gain — rises continuously
-        # Example: entry=₹100, price=₹110, SL = 100 + (110-100)×0.5 = ₹105
+        # Action: SL = entry + 30% of current gain above entry
+        # Effect: as price rises, SL locks in 30% of each new gain — gives trade more room
+        # Example: entry=₹100, price=₹110, SL = 100 + (110-100)×0.3 = ₹103
         # ============================================================
         elif trade["tier1_done"] and not trade["tier2_done"] and price < target:
-            adaptive_sl = entry + (price - entry) * 0.5  # locks 50% of gain above entry
+            adaptive_sl = entry + (price - entry) * 0.3  # locks 30% of gain above entry
             if adaptive_sl > sl:
                 # Only move SL up, never down — trailing SL can only tighten, never loosen
                 log.info(f"ADAPTIVE TRAIL: {trade['symbol']} SL {sl:.2f} → {adaptive_sl:.2f} "
-                         f"(price ₹{price:.2f}, protecting 50% of ₹{price - entry:.2f} gain)")
+                         f"(price ₹{price:.2f}, protecting 30% of ₹{price - entry:.2f} gain)")
                 self.db.update_trade_sl(trade_id, adaptive_sl)
                 self.db.log_trailing_sl(trade_id, sl, adaptive_sl, price, "ADAPTIVE_TRAIL")
                 new_id = self.order_mgr.replace_sl_order_safe(trade["symbol"], qty, adaptive_sl, trade["sl_order_id"])
@@ -499,7 +499,7 @@ class TradeMonitor:
                 log.info(f"TIER 2 SKIP: {trade['symbol']} partial sell of {exit_qty} shares "
                          f"nets only ₹{partial_pnl['net_pnl']:.2f} after charges. "
                          f"Trailing full qty instead.")
-                new_trail_sl = price - atr  # trail 1×ATR below current price with full qty
+                new_trail_sl = price - atr * 0.5  # trail 0.5×ATR below current price with full qty
                 if new_trail_sl > sl:
                     self.db.update_trade_sl(trade_id, new_trail_sl)
                     self.db.log_trailing_sl(trade_id, sl, new_trail_sl, price, "TIER2_SKIP_TRAIL")
@@ -532,16 +532,15 @@ class TradeMonitor:
                 log.info(f"TIER 2 Net PNL so far: ₹{pnl['net_pnl']:.2f}")
 
         # ============================================================
-        # TIER 3: Dynamic trail with 1×ATR after tier 2
+        # TIER 3: Dynamic trail with 0.5×ATR after tier 2
         # Condition: tier2 done, still have shares remaining
-        # Action: SL = current_price - 1×ATR (recalculated each cycle)
-        # Effect: SL rises as price rises, giving the trade room to breathe
-        #         but locking in more profit as new highs are made
+        # Action: SL = current_price - 0.5×ATR (recalculated each cycle)
+        # Effect: SL rises as price rises, locking in gains tightly without excessive givebacks
         # Note: ATR used here is TODAY's ATR (not at-entry ATR) so the trail
         #       widens/tightens with current volatility.
         # ============================================================
         elif trade["tier2_done"] and qty > 0 and atr > 0:
-            new_trail_sl = price - atr  # 1 ATR below current price
+            new_trail_sl = price - atr * 0.5  # 0.5 ATR below current price
             if new_trail_sl > sl:
                 # Only move SL up — never let it go down
                 log.info(f"TRAIL SL: {trade['symbol']} {sl:.2f} → {new_trail_sl:.2f}")

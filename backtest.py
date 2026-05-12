@@ -143,7 +143,7 @@ class BacktestDataFetcher:
     def __init__(self, token: str, refresh: bool = False):
         self.token   = token
         self.refresh = refresh
-        self._rl     = _RateLimiter(Config.UPSTOX_RATE_LIMIT_PER_SEC)
+        self._rl     = _RateLimiter(Config.UPSTOX_RATE_LIMIT_DATA_PER_SEC)
         os.makedirs(_CACHE_DIR, exist_ok=True)
 
     # -------------------------------------------------------------------------
@@ -264,7 +264,10 @@ class BacktestDataFetcher:
                 candles,
                 columns=["date", "open", "high", "low", "close", "volume", "oi"]
             )
-            df["date"] = pd.to_datetime(df["date"])
+            dates = pd.to_datetime(df["date"])
+            # Upstox V3 returns tz-aware timestamps — strip timezone so all
+            # slice comparisons (sim_ts <= date) stay tz-naive throughout.
+            df["date"] = dates.dt.tz_convert(None) if dates.dt.tz is not None else dates
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = df[col].astype(float)
             return df.sort_values("date").reset_index(drop=True)
@@ -430,6 +433,11 @@ class BacktestEngine:
         self._closed:   List[_ClosedTrade] = []       # completed trades
         self._pending:  Dict[str, Setup]  = {}        # symbol → setup (execute next day)
 
+        # SL hit cooldown: symbol → date string until which re-entry is blocked.
+        # After a SL_HIT exit the same stock triggered whipsaw re-entries causing
+        # double losses. 5 trading days (~1 week) gives the stock time to stabilise.
+        self._sl_cooldown: Dict[str, str] = {}
+
         # Daily P&L totals for protection rule tracking
         self._daily_pnl:   Dict[str, float] = {}     # date_str → net pnl
         self._weekly_pnl:  Dict[str, float] = {}     # YYYY-Www  → net pnl
@@ -592,6 +600,11 @@ class BacktestEngine:
         screened      = self._screener.screen(stocks_data, open_as_dicts, market_mode)
 
         cap = self.available_capital
+        # Collect ALL valid setups first, then pick the 2 highest-scoring ones.
+        # Previously we iterated in watchlist order and took the first 2 —
+        # that biased toward alphabetically-first stocks, not the best setups.
+        candidate_setups: list = []
+
         for sym in screened:
             data = stocks_data.get(sym)
             if data is None:
@@ -608,17 +621,32 @@ class BacktestEngine:
             if sized is None or sized.status == "SKIPPED":
                 continue
 
-            # Basic pre-trade gate: score ≥ 80, RR ≥ 2.0, not already pending
-            if sized.score < 60:
+            if sized.score < 65:
                 continue
             if sized.rr_ratio < Config.MIN_RR_RATIO:
                 continue
             if sym in self._pending:
                 continue  # already queued from an earlier day
 
+            # SL cooldown: skip re-entry if stock still near or below EMA_20 after SL.
+            # A genuine recovery needs close clearly back above EMA_20 — checked by the
+            # close >= ema_20 hard gate in strategy.py. Cooldown here blocks re-entry
+            # only if the stock hasn't yet cleared EMA_20 (i.e. gate already handles it).
+            # We keep a short 3-day cooldown just to prevent same-week whipsaws.
+            if self._sl_cooldown.get(sym, "") >= sim_date:
+                continue
+
+            candidate_setups.append((sized.score, sym, sized))
+
+        # Queue only the 2 highest-scoring setups for tomorrow's execution.
+        # Sorting by score ensures we always take the best setups, not the first ones.
+        candidate_setups.sort(key=lambda x: x[0], reverse=True)
+        for _, sym, sized in candidate_setups[:2]:
+            if sym in self._pending:
+                continue
             self._pending[sym] = sized
             self._signals += 1
-            log.debug(f"[BT {sim_date}] Queued {sym} {setup.strategy.value} "
+            log.debug(f"[BT {sim_date}] Queued {sym} {sized.strategy.value} "
                       f"score={sized.score} RR={sized.rr_ratio:.1f} "
                       f"entry=₹{sized.entry_price:.2f}")
 
@@ -762,21 +790,23 @@ class BacktestEngine:
 
             risk_per_share = pos.entry_price - pos.initial_sl
 
-            # T1 (NoLoss): SL → entry when 1:1 RR reached
+            # T1 (MinProfit): SL → entry + 12% of risk when 1:1 RR reached.
+            # 12% of risk locks in ~₹180 gross on ₹1,500 risk = ~₹85 net after charges.
+            # Breakeven (entry) exits net -₹96 after charges, making "wins" worse than losses.
             if not pos.tier1_done and h >= pos.entry_price + risk_per_share:
-                pos.current_sl = pos.entry_price
+                pos.current_sl = pos.entry_price + risk_per_share * 0.12
                 pos.tier1_done = True
-                log.debug(f"[BT {sim_date}] {pos.symbol} T1 NoLoss: SL → ₹{pos.current_sl:.2f}")
+                log.debug(f"[BT {sim_date}] {pos.symbol} T1 MinProfit: SL → ₹{pos.current_sl:.2f}")
 
-            # T1.5 (Adaptive): SL = entry + 50% of gain (only after T1)
+            # T1.5 (Adaptive): SL = entry + 30% of gain (only after T1)
             if pos.tier1_done and not pos.tier2_done:
                 gain          = max(0.0, c - pos.entry_price)
-                adaptive_sl   = pos.entry_price + 0.5 * gain
+                adaptive_sl   = pos.entry_price + 0.3 * gain
                 pos.current_sl = max(pos.current_sl, round(adaptive_sl, 2))
 
-            # T3 (Trail): after T2, SL = max(current_sl, close − 1×ATR)
+            # T3 (Trail): after T2, SL = max(current_sl, close − 0.5×ATR)
             if pos.tier2_done and atr > 0:
-                trail_sl       = c - atr
+                trail_sl       = c - atr * 0.5
                 pos.current_sl = max(pos.current_sl, round(trail_sl, 2))
                 # T3 SL breached — exit with slippage
                 if l <= pos.current_sl:
@@ -880,6 +910,15 @@ class BacktestEngine:
         # Capital: return the remaining shares' proceeds (partials already returned in _do_t2)
         self.available_capital += (pos.remaining_qty * exit_price) - charges
 
+        # SL cooldown: block re-entry for 3 calendar days after a SL hit.
+        # Re-entering the same stock immediately after SL creates whipsaw double-losses
+        # when the stock is trending down. The cooldown lets the stock stabilise.
+        if reason in ("SL_HIT", "SL_HIT_GAP"):
+            cooldown_until = (
+                datetime.strptime(sim_date, "%Y-%m-%d") + timedelta(days=3)
+            ).strftime("%Y-%m-%d")
+            self._sl_cooldown[pos.symbol] = cooldown_until
+
         # Update P&L buckets
         self._record_pnl(sim_date, net_pnl)
 
@@ -932,7 +971,7 @@ class BacktestEngine:
         elif setup.strategy == StrategyType.WEEK52:
             sl = data.week_52_high - (atr * 1.5)
         elif setup.strategy == StrategyType.PULLBACK:
-            sl = data.ema_20 - (atr * 1.0)
+            sl = data.ema_20 - (atr * 1.5)
 
         risk_per_share = entry - sl
         if risk_per_share <= 0:

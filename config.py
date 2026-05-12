@@ -15,6 +15,14 @@ import os
 import logging
 from typing import Optional
 
+# Load .env file if present — lets you store credentials locally without exporting env vars.
+# pip install python-dotenv   (silent no-op if the package or file is missing)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)   # override=False: real env vars always take precedence
+except ImportError:
+    pass
+
 # Third-party availability flags.
 # The system degrades gracefully if packages are missing —
 # data fetching falls back to mock OHLCV, Upstox orders are skipped.
@@ -89,7 +97,13 @@ class Config:
     # max_workers=5 with rate limiter at 3.5 req/sec keeps us safely under the limit
     # even with burst concurrency. Increase carefully — 429s fall back to mock data.
     UPSTOX_MAX_WORKERS       = 5     # concurrent threads for parallel OHLCV fetching
-    UPSTOX_RATE_LIMIT_PER_SEC = 3.5  # max API calls per second across all threads
+    # Upstox rate limits (source: upstox.com/developer/api-documentation/rate-limiting)
+    # Standard APIs (candles, market data, portfolio, charges): 50 req/sec, 500 req/min
+    # Order APIs  (place / cancel / modify):                    10 req/sec, 500 req/min
+    # Shared hard cap for both categories:                      2,000 req / 30 min
+    UPSTOX_RATE_LIMIT_DATA_PER_SEC  = 40   # standard APIs — safe buffer under 50/sec
+    UPSTOX_RATE_LIMIT_ORDER_PER_SEC = 8    # order APIs  — safe buffer under 10/sec
+    UPSTOX_RATE_LIMIT_PER_MIN       = 450  # per-minute cap for all calls (Upstox limit: 500/min)
 
     # --- Retry config (applies to all Upstox API calls) ---
     API_MAX_RETRIES   = 3    # total attempts per call (1 original + 2 retries)
@@ -135,14 +149,14 @@ class Config:
     MAX_DRAWDOWN       = 20000
 
     # --- Risk/reward ---
-    MIN_RR_RATIO = 2.0   # minimum 1:2 — risk ₹1 to make ₹2
+    MIN_RR_RATIO = 1.5   # minimum 1:1.5 — risk ₹1 to make ₹1.5
 
     # --- ATR multipliers for stop loss placement per strategy ---
     # Higher multiplier = wider SL = more breathing room but more risk per share
     ATR_MULT = {
-        "SWING":    1.5,   # standard swing SL
+        "SWING":    2.0,   # SL wider than PULLBACK entry since price is already above EMA20
         "BREAKOUT": 1.0,   # tight SL below consolidation low
-        "PULLBACK": 1.0,   # SL just below the EMA being tested
+        "PULLBACK": 3.0,   # SL placed wider to avoid whipsaw exits through intraday noise
         "WEEK52":   1.5,   # SL just below the old 52W high
     }
 
@@ -273,51 +287,110 @@ class Config:
 
 class Watchlist:
     """
-    The 15 Nifty 50 stocks this system trades.
+    All Nifty 50 stocks except IT/tech sector (TCS, INFY, HCLTECH, WIPRO, TECHM).
+    45 stocks across 15 sectors — gives the screener a wide pool to find setups in.
 
-    Why only 15?
-    - Deep familiarity beats broad coverage for a ₹2L account
-    - All are high-liquidity large caps — easy to enter/exit without slippage
-    - Spread across 9 sectors for diversification
-    - All Tier 1 — no mid/small cap risk
-
-    Sector mapping is used by StockScreener to enforce a rule:
-    max 1 open trade per sector at any time. This prevents over-concentration
-    e.g. holding both ICICIBANK and HDFCBANK simultaneously.
+    Sector mapping enforces max 1 open trade per sector at any time, preventing
+    over-concentration (e.g. holding ICICIBANK + HDFCBANK + SBIN simultaneously).
+    With 6 banking stocks in the pool, only the best setup from that sector enters.
     """
 
     STOCKS = {
-        # symbol: {sector, tier}
-        "ICICIBANK":  {"sector": "BANKING",  "tier": 1},
-        "HDFCBANK":   {"sector": "BANKING",  "tier": 1},
-        "AXISBANK":   {"sector": "BANKING",  "tier": 1},
-        "INFY":       {"sector": "IT",       "tier": 1},
-        "HCLTECH":    {"sector": "IT",       "tier": 1},
-        "TATAMOTORS": {"sector": "AUTO",     "tier": 1},
-        "MARUTI":     {"sector": "AUTO",     "tier": 1},
-        "RELIANCE":   {"sector": "ENERGY",   "tier": 1},
-        "BHARTIARTL": {"sector": "TELECOM",  "tier": 1},
-        "SUNPHARMA":  {"sector": "PHARMA",   "tier": 1},
-        "BAJFINANCE": {"sector": "FINANCE",  "tier": 1},
-        "LT":         {"sector": "INFRA",    "tier": 1},
-        "ITC":        {"sector": "CONSUMER", "tier": 1},
-        "TITAN":      {"sector": "CONSUMER", "tier": 1},
-        "TCS":        {"sector": "IT",       "tier": 1},
+        # ── BANKING (6) ──────────────────────────────────────────────────────
+        "ICICIBANK":  {"sector": "BANKING",      "tier": 1},
+        "HDFCBANK":   {"sector": "BANKING",      "tier": 1},
+        "AXISBANK":   {"sector": "BANKING",      "tier": 1},
+        "SBIN":       {"sector": "BANKING",      "tier": 1},
+        "KOTAKBANK":  {"sector": "BANKING",      "tier": 1},
+        "INDUSINDBK": {"sector": "BANKING",      "tier": 1},
+
+        # ── FINANCE (3) ──────────────────────────────────────────────────────
+        "BAJFINANCE": {"sector": "FINANCE",      "tier": 1},
+        "BAJAJFINSV": {"sector": "FINANCE",      "tier": 1},
+        "SHRIRAMFIN": {"sector": "FINANCE",      "tier": 1},
+
+        # ── INSURANCE (2) ────────────────────────────────────────────────────
+        "HDFCLIFE":   {"sector": "INSURANCE",    "tier": 1},
+        "SBILIFE":    {"sector": "INSURANCE",    "tier": 1},
+
+        # ── AUTO (6) ─────────────────────────────────────────────────────────
+        "TATAMOTORS": {"sector": "AUTO",         "tier": 1},
+        "MARUTI":     {"sector": "AUTO",         "tier": 1},
+        "M&M":        {"sector": "AUTO",         "tier": 1},
+        "BAJAJ-AUTO": {"sector": "AUTO",         "tier": 1},
+        "HEROMOTOCO": {"sector": "AUTO",         "tier": 1},
+        "EICHERMOT":  {"sector": "AUTO",         "tier": 1},
+
+        # ── FMCG (5) ─────────────────────────────────────────────────────────
+        "ITC":        {"sector": "FMCG",         "tier": 1},
+        "HINDUNILVR": {"sector": "FMCG",         "tier": 1},
+        "NESTLEIND":  {"sector": "FMCG",         "tier": 1},
+        "BRITANNIA":  {"sector": "FMCG",         "tier": 1},
+        "TATACONSUM": {"sector": "FMCG",         "tier": 1},
+
+        # ── CONSUMER (3) ─────────────────────────────────────────────────────
+        "TITAN":      {"sector": "CONSUMER",     "tier": 1},
+        "ASIANPAINT": {"sector": "CONSUMER",     "tier": 1},
+        "TRENT":      {"sector": "CONSUMER",     "tier": 1},
+
+        # ── PHARMA (3) ───────────────────────────────────────────────────────
+        "SUNPHARMA":  {"sector": "PHARMA",       "tier": 1},
+        "CIPLA":      {"sector": "PHARMA",       "tier": 1},
+        "DRREDDY":    {"sector": "PHARMA",       "tier": 1},
+
+        # ── HEALTHCARE (1) ───────────────────────────────────────────────────
+        "APOLLOHOSP": {"sector": "HEALTHCARE",   "tier": 1},
+
+        # ── METALS (3) ───────────────────────────────────────────────────────
+        "HINDALCO":   {"sector": "METALS",       "tier": 1},
+        "TATASTEEL":  {"sector": "METALS",       "tier": 1},
+        "JSWSTEEL":   {"sector": "METALS",       "tier": 1},
+
+        # ── ENERGY (6) ───────────────────────────────────────────────────────
+        "RELIANCE":   {"sector": "ENERGY",       "tier": 1},
+        "ONGC":       {"sector": "ENERGY",       "tier": 1},
+        "NTPC":       {"sector": "ENERGY",       "tier": 1},
+        "POWERGRID":  {"sector": "ENERGY",       "tier": 1},
+        "COALINDIA":  {"sector": "ENERGY",       "tier": 1},
+        "BPCL":       {"sector": "ENERGY",       "tier": 1},
+
+        # ── CEMENT (2) ───────────────────────────────────────────────────────
+        "ULTRACEMCO": {"sector": "CEMENT",       "tier": 1},
+        "GRASIM":     {"sector": "CEMENT",       "tier": 1},
+
+        # ── INFRA (2) ────────────────────────────────────────────────────────
+        "LT":         {"sector": "INFRA",        "tier": 1},
+        "ADANIPORTS": {"sector": "INFRA",        "tier": 1},
+
+        # ── CONGLOMERATE (1) ─────────────────────────────────────────────────
+        "ADANIENT":   {"sector": "CONGLOMERATE", "tier": 1},
+
+        # ── TELECOM (1) ──────────────────────────────────────────────────────
+        "BHARTIARTL": {"sector": "TELECOM",      "tier": 1},
+
+        # ── DEFENCE (1) ──────────────────────────────────────────────────────
+        "BEL":        {"sector": "DEFENCE",      "tier": 1},
     }
 
     NIFTY_SYMBOL = "NIFTY 50"
 
     # NSE sector index names — used to pull sector-level FII activity
     SECTOR_INDICES = {
-        "BANKING":  "NIFTY BANK",
-        "IT":       "NIFTY IT",
-        "AUTO":     "NIFTY AUTO",
-        "PHARMA":   "NIFTY PHARMA",
-        "ENERGY":   "NIFTY ENERGY",
-        "INFRA":    "NIFTY INFRA",
-        "CONSUMER": "NIFTY FMCG",
-        "TELECOM":  "NIFTY MEDIA",
-        "FINANCE":  "NIFTY FIN SERVICE",
+        "BANKING":      "NIFTY BANK",
+        "FINANCE":      "NIFTY FIN SERVICE",
+        "INSURANCE":    "NIFTY FIN SERVICE",
+        "AUTO":         "NIFTY AUTO",
+        "FMCG":         "NIFTY FMCG",
+        "CONSUMER":     "NIFTY INDIA CONSUMPTION",
+        "PHARMA":       "NIFTY PHARMA",
+        "HEALTHCARE":   "NIFTY HEALTHCARE INDEX",
+        "METALS":       "NIFTY METAL",
+        "ENERGY":       "NIFTY ENERGY",
+        "CEMENT":       "NIFTY INFRA",
+        "INFRA":        "NIFTY INFRA",
+        "CONGLOMERATE": "NIFTY 500",
+        "TELECOM":      "NIFTY MEDIA",
+        "DEFENCE":      "NIFTY INDIA DEFENCE",
     }
 
     @classmethod

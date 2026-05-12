@@ -1,5 +1,4 @@
 upstox-python-sdk
-upstox-totp
 pandas
 numpy
 requests
@@ -7,3 +6,6 @@ pyotp
 schedule
 pnsea
 pydantic
+python-dotenv
+# upstox-totp is optional (headless daily auth only) — not on PyPI, install manually:
+# pip install git+https://github.com/batpool/upstox-totp.git

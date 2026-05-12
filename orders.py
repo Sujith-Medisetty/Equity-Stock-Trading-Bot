@@ -43,7 +43,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from config import Config, log, LIBS_AVAILABLE, UPSTOX_AVAILABLE
-from data_collector import INSTRUMENT_KEYS, _V3_BASE, _with_retry
+from data_collector import INSTRUMENT_KEYS, _V3_BASE, _with_retry, _RateLimiter
 from models import Trade, Setup
 from database import DatabaseManager
 
@@ -75,9 +75,13 @@ class OrderManager:
     """
 
     def __init__(self, db: DatabaseManager):
-        self.db      = db
-        self._client = None   # Upstox ApiClient — initialised after auth
-        self._auth   = None
+        self.db        = db
+        self._client   = None   # Upstox ApiClient — initialised after auth
+        self._auth     = None
+        # Order APIs (place/cancel/modify) have a stricter 10 req/sec Upstox limit.
+        # Data APIs (LTP, holdings, charges) share the same limiter here since
+        # monitor traffic is sparse (<10 calls per 15-min cycle in practice).
+        self._rate_lim = _RateLimiter(Config.UPSTOX_RATE_LIMIT_ORDER_PER_SEC)
         self._init_upstox()
 
     def _init_upstox(self):
@@ -139,6 +143,7 @@ class OrderManager:
             "Content-Type":  "application/json",
             "Accept":        "application/json",
         }
+        self._rate_lim.wait()
         resp = _requests.post(url, json=payload, headers=headers, timeout=10)
         if not resp.ok:
             err = IOError(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -159,6 +164,7 @@ class OrderManager:
         if Config.BACKTEST_MODE or not self._client:
             return max(0.0, float(Config.TOTAL_CAPITAL))
         try:
+            self._rate_lim.wait()
             api  = UserApi(self._client)
             resp = api.get_fund_and_margin(api_version="2.0", segment="SEC")
             equity = resp.data.equity if resp and resp.data else None
@@ -202,6 +208,7 @@ class OrderManager:
             return None
         try:
             self._refresh_client_if_needed()
+            self._rate_lim.wait()
             url = "https://api.upstox.com/v2/charges/brokerage"
             params = {
                 "instrument_token": instrument_token,
@@ -256,6 +263,7 @@ class OrderManager:
         if not key_to_sym:
             return {}
         try:
+            self._rate_lim.wait()
             url     = f"{_V3_BASE}/market-quote/ltp"
             params  = {"instrument_key": ",".join(key_to_sym.keys())}
             headers = {
@@ -290,6 +298,7 @@ class OrderManager:
         if not key_to_sym:
             return {}
         try:
+            self._rate_lim.wait()
             url     = f"{_V3_BASE}/market-quote/ohlc"
             params  = {"instrument_key": ",".join(key_to_sym.keys()), "interval": "1d"}
             headers = {
@@ -334,6 +343,7 @@ class OrderManager:
         if Config.BACKTEST_MODE or not self._client:
             return []
         try:
+            self._rate_lim.wait()
             api  = PortfolioApi(self._client)
             resp = api.get_holdings(api_version="2.0")
             holdings = []
@@ -357,6 +367,7 @@ class OrderManager:
         if Config.BACKTEST_MODE or not self._client:
             return []
         try:
+            self._rate_lim.wait()
             api  = OrderApi(self._client)
             resp = api.get_order_book(api_version="2.0")
             orders = []
@@ -497,6 +508,7 @@ class OrderManager:
         # Cancel old SL via V2 SDK — failure acceptable (order may have already executed)
         if old_order_id:
             try:
+                self._rate_lim.wait()
                 OrderApi(self._client).cancel_order(old_order_id, api_version="2.0")
                 log.info(f"Cancelled SL order {old_order_id} for {symbol}")
             except Exception as e:

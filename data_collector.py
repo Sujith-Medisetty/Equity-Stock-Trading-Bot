@@ -10,7 +10,8 @@ Two external sources feed the system:
    - Live price quotes (LTP) via V3 batch endpoint — all symbols in ONE call.
      V3 LTP now natively returns volume + cp (prev close) alongside last_price.
    All fetches use parallel threads (max UPSTOX_MAX_WORKERS concurrent) with a
-   shared rate limiter (UPSTOX_RATE_LIMIT_PER_SEC) to stay under Upstox's 250 req/min limit.
+   shared rate limiter enforcing both per-second (40 req/s) and per-minute (450 req/min)
+   caps — safely under Upstox's published limits (50 req/s, 500 req/min, 2000 req/30min).
    Every call retries up to API_MAX_RETRIES times with exponential backoff.
 
 2. NSE India public API (via pnsea — handles Akamai bot protection automatically)
@@ -71,21 +72,82 @@ except ImportError:
 # Upstox instrument keys: "NSE_EQ|{ISIN}" for equity, "NSE_INDEX|{index_name}" for indices.
 # ISINs never change — they are the universal identifier for each security.
 INSTRUMENT_KEYS = {
+    # ── BANKING ──────────────────────────────────────────────────────────────
     "ICICIBANK":  "NSE_EQ|INE090A01021",
     "HDFCBANK":   "NSE_EQ|INE040A01034",
     "AXISBANK":   "NSE_EQ|INE238A01034",
-    "INFY":       "NSE_EQ|INE009A01021",
-    "HCLTECH":    "NSE_EQ|INE860A01027",
+    "SBIN":       "NSE_EQ|INE062A01020",
+    "KOTAKBANK":  "NSE_EQ|INE237A01036",
+    "INDUSINDBK": "NSE_EQ|INE095A01012",
+
+    # ── FINANCE ──────────────────────────────────────────────────────────────
+    "BAJFINANCE": "NSE_EQ|INE296A01032",
+    "BAJAJFINSV": "NSE_EQ|INE918I01026",
+    "SHRIRAMFIN": "NSE_EQ|INE721A01047",
+
+    # ── INSURANCE ────────────────────────────────────────────────────────────
+    "HDFCLIFE":   "NSE_EQ|INE795G01014",
+    "SBILIFE":    "NSE_EQ|INE123W01016",
+
+    # ── AUTO ─────────────────────────────────────────────────────────────────
     "TATAMOTORS": "NSE_EQ|INE155A01022",
     "MARUTI":     "NSE_EQ|INE585B01010",
-    "RELIANCE":   "NSE_EQ|INE002A01018",
-    "BHARTIARTL": "NSE_EQ|INE397D01024",
-    "SUNPHARMA":  "NSE_EQ|INE044A01036",
-    "BAJFINANCE": "NSE_EQ|INE296A01024",
-    "LT":         "NSE_EQ|INE018A01030",
+    "M&M":        "NSE_EQ|INE101A01026",
+    "BAJAJ-AUTO": "NSE_EQ|INE917I01010",
+    "HEROMOTOCO": "NSE_EQ|INE158A01026",
+    "EICHERMOT":  "NSE_EQ|INE066A01021",
+
+    # ── FMCG ─────────────────────────────────────────────────────────────────
     "ITC":        "NSE_EQ|INE154A01025",
+    "HINDUNILVR": "NSE_EQ|INE030A01027",
+    "NESTLEIND":  "NSE_EQ|INE239A01024",
+    "BRITANNIA":  "NSE_EQ|INE216A01030",
+    "TATACONSUM": "NSE_EQ|INE192A01025",
+
+    # ── CONSUMER ─────────────────────────────────────────────────────────────
     "TITAN":      "NSE_EQ|INE280A01028",
-    "TCS":        "NSE_EQ|INE467B01029",
+    "ASIANPAINT": "NSE_EQ|INE021A01026",
+    "TRENT":      "NSE_EQ|INE849A01020",
+
+    # ── PHARMA ───────────────────────────────────────────────────────────────
+    "SUNPHARMA":  "NSE_EQ|INE044A01036",
+    "CIPLA":      "NSE_EQ|INE059A01026",
+    "DRREDDY":    "NSE_EQ|INE089A01031",
+
+    # ── HEALTHCARE ───────────────────────────────────────────────────────────
+    "APOLLOHOSP": "NSE_EQ|INE437A01024",
+
+    # ── METALS ───────────────────────────────────────────────────────────────
+    "HINDALCO":   "NSE_EQ|INE038A01020",
+    "TATASTEEL":  "NSE_EQ|INE081A01020",
+    "JSWSTEEL":   "NSE_EQ|INE019A01038",
+
+    # ── ENERGY ───────────────────────────────────────────────────────────────
+    "RELIANCE":   "NSE_EQ|INE002A01018",
+    "ONGC":       "NSE_EQ|INE213A01029",
+    "NTPC":       "NSE_EQ|INE733E01010",
+    "POWERGRID":  "NSE_EQ|INE752E01010",
+    "COALINDIA":  "NSE_EQ|INE522F01014",
+    "BPCL":       "NSE_EQ|INE029A01011",
+
+    # ── CEMENT ───────────────────────────────────────────────────────────────
+    "ULTRACEMCO": "NSE_EQ|INE481G01011",
+    "GRASIM":     "NSE_EQ|INE047A01021",
+
+    # ── INFRA ────────────────────────────────────────────────────────────────
+    "LT":         "NSE_EQ|INE018A01030",
+    "ADANIPORTS": "NSE_EQ|INE742F01042",
+
+    # ── CONGLOMERATE ─────────────────────────────────────────────────────────
+    "ADANIENT":   "NSE_EQ|INE423A01024",
+
+    # ── TELECOM ──────────────────────────────────────────────────────────────
+    "BHARTIARTL": "NSE_EQ|INE397D01024",
+
+    # ── DEFENCE ──────────────────────────────────────────────────────────────
+    "BEL":        "NSE_EQ|INE263A01024",
+
+    # ── INDEX ────────────────────────────────────────────────────────────────
     "NIFTY 50":   "NSE_INDEX|Nifty 50",
 }
 
@@ -151,25 +213,51 @@ def _with_retry(func=None, *, max_attempts=None, base_delay=None, backoff=None):
 
 class _RateLimiter:
     """
-    Ensures no more than max_per_second API calls are fired across all threads.
-    Each thread calls wait() before making an API call — if the interval since
-    the last call hasn't elapsed, it sleeps for the remaining time.
-    Lock ensures that concurrent threads don't both read the same last-call timestamp
-    and both decide to proceed simultaneously.
+    Thread-safe rate limiter enforcing both per-second and per-minute caps.
+
+    Each thread calls wait() before making an API call. The limiter ensures:
+      1. No more than max_per_second calls in any 1-second window (burst cap)
+      2. No more than max_per_minute calls in any rolling 60-second window (sustained cap)
+
+    Upstox published limits:
+      Standard APIs (candles, quotes, portfolio): 50/sec, 500/min
+      Order APIs (place/cancel/modify):           10/sec, 500/min
+    We target 40/sec + 450/min for data, 8/sec + 450/min for orders.
     """
 
-    def __init__(self, max_per_second: float):
-        self._interval = 1.0 / max_per_second
-        self._lock     = threading.Lock()
-        self._last     = 0.0
+    def __init__(self, max_per_second: float,
+                 max_per_minute: int = None):
+        self._min_interval = 1.0 / max_per_second
+        self._max_per_min  = max_per_minute if max_per_minute is not None \
+                             else Config.UPSTOX_RATE_LIMIT_PER_MIN
+        self._lock         = threading.Lock()
+        self._last         = 0.0
+        self._min_window: list = []   # timestamps of calls in the last 60 s
 
     def wait(self):
         with self._lock:
-            now     = time.time()
-            to_wait = self._interval - (now - self._last)
+            now = time.time()
+
+            # ── Per-minute enforcement ────────────────────────────────────────
+            cutoff = now - 60.0
+            self._min_window = [t for t in self._min_window if t > cutoff]
+            if len(self._min_window) >= self._max_per_min:
+                # Sleep until the oldest call in the window falls out of the 60-s bucket
+                sleep_for = self._min_window[0] - cutoff
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+                now    = time.time()
+                cutoff = now - 60.0
+                self._min_window = [t for t in self._min_window if t > cutoff]
+
+            # ── Per-second enforcement ────────────────────────────────────────
+            to_wait = self._min_interval - (now - self._last)
             if to_wait > 0:
                 time.sleep(to_wait)
-            self._last = time.time()
+
+            now = time.time()
+            self._last = now
+            self._min_window.append(now)
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +280,7 @@ class DataCollector:
         self.db           = db
         self._upstox      = None          # Upstox API client (set after auth)
         self._nse         = PnseaNSE() if PNSEA_AVAILABLE else None
-        self._rate_lim    = _RateLimiter(Config.UPSTOX_RATE_LIMIT_PER_SEC)
+        self._rate_lim    = _RateLimiter(Config.UPSTOX_RATE_LIMIT_DATA_PER_SEC)
         self._auth        = None          # lazy-initialised below
         self._init_upstox()
 
@@ -252,14 +340,15 @@ class DataCollector:
 
         Uses a ThreadPoolExecutor with UPSTOX_MAX_WORKERS threads.
         Each thread shares the _RateLimiter so the combined request rate across
-        all threads stays at or below UPSTOX_RATE_LIMIT_PER_SEC.
+        all threads stays within UPSTOX_RATE_LIMIT_DATA_PER_SEC and UPSTOX_RATE_LIMIT_PER_MIN.
         """
         self._refresh_token_if_needed()
 
         results = {}
         log.info(f"Parallel OHLCV fetch starting: {len(symbols)} symbols, "
                  f"{Config.UPSTOX_MAX_WORKERS} workers, "
-                 f"{Config.UPSTOX_RATE_LIMIT_PER_SEC} req/s limit")
+                 f"{Config.UPSTOX_RATE_LIMIT_DATA_PER_SEC} req/s | "
+                 f"{Config.UPSTOX_RATE_LIMIT_PER_MIN} req/min limit")
 
         with ThreadPoolExecutor(max_workers=Config.UPSTOX_MAX_WORKERS) as pool:
             future_to_sym = {

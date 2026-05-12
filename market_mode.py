@@ -91,39 +91,39 @@ class MarketModeEngine:
         above_ema50  = nifty_data.close > nifty_data.ema_50    # medium-term trend bullish
         above_ema200 = nifty_data.close > nifty_data.ema_200   # long-term trend bullish
         rsi          = nifty_data.rsi                           # Nifty's RSI (above 50 = bullish momentum)
+        # EMA structure: is Nifty's own 20-day above its 50-day?
+        # close > EMA20 > EMA50 does NOT guarantee EMA20 > EMA50 (close can be above both while
+        # EMA20 slides below EMA50 in a weakening trend). This catches early-stage breakdowns.
+        ema_structure_intact = nifty_data.ema_20 > nifty_data.ema_50
 
-        # Strong bull: all 3 EMAs stacked (close > 20 > 50 > 200 implied) AND RSI above 50 (momentum positive)
-        # This is the "everything aligned" condition.
-        if above_ema20 and above_ema50 and above_ema200 and rsi > 50:
+        # Full bull: close above all 3 EMAs, RSI positive, AND Nifty's EMA structure intact.
+        # Requires EMA20 > EMA50 — if EMA20 is sliding toward EMA50, the trend is weakening
+        # even if the close is still above both. This prevents NORMAL mode in borderline markets
+        # (e.g. 2025 Jul-Dec type months where Nifty looked fine on close but EMAs were flattening).
+        if above_ema20 and above_ema50 and above_ema200 and rsi > 50 and ema_structure_intact:
             if fii_flow == FIIFlow.BUYING:
-                # Best possible condition: trend + momentum + institutions buying
-                # → full aggression, all 4 strategies active, all 4 positions allowed
+                # Best possible: trend + momentum + institutions buying → full aggression
                 mode = MarketMode.AGGRESSIVE
             elif fii_flow == FIIFlow.SELLING:
-                # Trend looks fine but institutions are selling into strength — be careful.
-                # Could be distribution (smart money exiting into retail buying).
-                # Only take highest-score setups.
+                # Trend fine but institutions selling into strength — distribution risk → selective
                 mode = MarketMode.SELECTIVE
             else:
-                # Trend intact, FII neutral — normal trading conditions
+                # Trend intact, FII neutral → normal trading conditions
                 mode = MarketMode.NORMAL
 
-        # Temporary pullback in an ongoing bull market:
-        # Nifty is above the 50-day and 200-day EMA but dipped below the 20-day EMA.
-        # This is a normal healthy correction in an uptrend — don't go full defensive.
-        # But be selective: only the best setups, since trend is slightly weakened.
-        elif above_ema50 and above_ema200 and not above_ema20:
-            mode = MarketMode.SELECTIVE  # only highest-score setups pass the strategy filter
+        # SELECTIVE: Nifty above EMA50 and EMA200 but some weakness present:
+        # - EMA structure weakening (EMA20 ≤ EMA50) even if close still above both
+        # - OR close pulled below EMA20 (temporary dip in an overall bull market)
+        # - OR RSI ≤ 50 (momentum waning)
+        # Don't add new positions aggressively — only the highest-score setups qualify.
+        elif above_ema50 and above_ema200:
+            mode = MarketMode.SELECTIVE
 
-        # Sideways / mixed: Nifty is above 200-day (long-term trend still up) but not the 50-day.
-        # Also requires RSI > 40 to confirm it's not in a full breakdown.
-        # This is a choppy, uncertain market — limit to 1-2 positions, very selective.
+        # Sideways / mixed: above EMA200 but not EMA50. RSI > 40 rules out full breakdown.
         elif above_ema200 and rsi > 40:
-            mode = MarketMode.CAUTIOUS   # 1-2 positions max
+            mode = MarketMode.CAUTIOUS   # 1-2 positions max, very selective
 
-        # Bear market / breakdown: Nifty below 200-day EMA, or RSI < 40 (momentum broken).
-        # In a bear market, all swing trades are fighting the primary downtrend.
-        # The few setups that form usually fail or reverse quickly.
+        # Bear market / breakdown: Nifty below 200-day EMA or RSI < 40.
         else:
             mode = MarketMode.DEFENSIVE  # no new entries allowed
 

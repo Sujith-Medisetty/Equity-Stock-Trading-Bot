@@ -150,6 +150,13 @@ class StockData:
     obv_rising:              bool  = False
     atr_ratio:               float = 1.0
 
+    # ADX (Average Directional Index) — trend strength, not direction
+    # < 18  = ranging (no real trend, pullback entries unreliable)
+    # 18-25 = weak/developing trend
+    # > 25  = strong confirmed trend (pullback entries have directional support)
+    adx:          float = 0.0
+    adx_trending: bool  = False  # True when +DI > -DI (bulls dominating)
+
     # FVG (Fair Value Gap) fields — computed by IndicatorEngine, used by screener + strategy + risk
     in_fvg_zone:  bool  = False  # price inside a RECENT unfilled bullish FVG (≤10 days old) → screener blocks entry
     fvg_pullback: bool  = False  # price inside ANY unfilled bullish FVG → PULLBACK score +10

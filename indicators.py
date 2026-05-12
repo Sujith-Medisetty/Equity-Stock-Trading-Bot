@@ -117,6 +117,57 @@ class ta:
         return tr.ewm(com=length - 1, adjust=False).mean()   # smooth with EWM over 14 days
 
     @staticmethod
+    def adx(high: "pd.Series", low: "pd.Series",
+            close: "pd.Series", length: int = 14) -> "pd.DataFrame":
+        """
+        Average Directional Index — measures TREND STRENGTH, not direction.
+        Returns a DataFrame with three columns:
+          adx      — strength of the trend (14-period)
+          plus_di  — bullish directional pressure
+          minus_di — bearish directional pressure
+
+        Interpretation:
+          ADX < 18          → ranging market, no trend: pullback entries unreliable
+          ADX 18-25         → weak/developing trend: enter cautiously
+          ADX > 25          → strong confirmed trend: pullbacks have institutional support
+          plus_di > minus_di → bullish (uptrend): safe to look for long entries
+          minus_di > plus_di → bearish (downtrend): avoid long entries
+
+        Uses Wilder's smoothing (com = length-1) — identical to our RSI and ATR.
+        """
+        prev_high  = high.shift(1)
+        prev_low   = low.shift(1)
+        prev_close = close.shift(1)
+
+        up   = high - prev_high      # how much higher than yesterday's high
+        down = prev_low - low        # how much lower than yesterday's low
+
+        # +DM fires only when today's upward move > downward move AND price moved up
+        # -DM fires only when today's downward move > upward move AND price moved down
+        plus_dm  = pd.Series(np.where((up > down) & (up > 0), up, 0.0),   index=high.index)
+        minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=high.index)
+
+        # True Range (same formula as ta.atr but inline to avoid duplication)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low  - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        # Wilder's smoothing (com = length-1 = standard for ADX/RSI/ATR)
+        atr_s    = tr.ewm(com=length - 1, adjust=False).mean()
+        plus_s   = plus_dm.ewm(com=length - 1, adjust=False).mean()
+        minus_s  = minus_dm.ewm(com=length - 1, adjust=False).mean()
+
+        plus_di  = 100 * plus_s  / atr_s.replace(0, 1e-9)
+        minus_di = 100 * minus_s / atr_s.replace(0, 1e-9)
+
+        dx  = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-9)
+        adx = dx.ewm(com=length - 1, adjust=False).mean()
+
+        return pd.DataFrame({"adx": adx, "plus_di": plus_di, "minus_di": minus_di})
+
+    @staticmethod
     def obv(close: "pd.Series", volume: "pd.Series") -> "pd.Series":
         """
         On-Balance Volume — cumulative volume in the direction of price.
@@ -182,6 +233,12 @@ class IndicatorEngine:
 
             # --- Volatility indicators ---
             df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=Config.ATR_PERIOD)  # 14-period ATR
+
+            # --- ADX (trend strength + direction) ---
+            adx_df         = ta.adx(df["high"], df["low"], df["close"], length=Config.ATR_PERIOD)
+            df["adx"]      = adx_df["adx"]
+            df["plus_di"]  = adx_df["plus_di"]
+            df["minus_di"] = adx_df["minus_di"]
 
             # --- Volume analysis ---
             # 20-day rolling average volume — baseline for comparison
@@ -253,6 +310,9 @@ class IndicatorEngine:
                 consolidation_range_pct=float(consolidation_pct),
                 obv_rising=obv_rising,
                 atr_ratio=float(last["atr_ratio"]) if not pd.isna(last["atr_ratio"]) else 1.0,
+                adx=float(last["adx"]) if not pd.isna(last["adx"]) else 0.0,
+                adx_trending=bool(float(last["plus_di"]) > float(last["minus_di"]))
+                    if (not pd.isna(last["plus_di"]) and not pd.isna(last["minus_di"])) else False,
                 fvg_zones=fvg_zones,  # stored for intraday re-evaluation in run_midday_scan()
             )
             # Populate FVG flags using the shared function (daily-only at this point;

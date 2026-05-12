@@ -99,43 +99,76 @@ class StrategyEngine:
 
     def _check_swing(self, symbol, data, mode):
         """
-        Trend-following entry. Requires ALL 7 conditions to be true
-        (sum(checks) >= 6 with 7 total is 6 out of 7 minimum — one soft failure allowed).
-        Close > EMA20 > EMA50 confirms the trend hierarchy is intact.
-        RSI 45-65: above 50 confirms momentum, below 65 means not overbought yet.
-        MACD > signal + histogram > 0: momentum is positive and accelerating.
-        Volume 1.2x: at least modest volume confirms real buyers, not just drift.
-        tf_aligned >= 2: daily signal is confirmed on at least one other timeframe.
+        Momentum Burst — entry on a MARUBOZU candle in a confirmed ADX uptrend.
+
+        A MARUBOZU (big green body ≥ 85% of range, volume ≥ 1.5× avg) is a decisive
+        institutional conviction signal: large buyers absorbed all supply in one session.
+        When this appears in a confirmed uptrend (ADX > 22), momentum continuation is
+        the highest-probability outcome — institutions don't accumulate this aggressively
+        for a single-day move.
+
+        Complementary to PULLBACK:
+          PULLBACK → counter-trend bounce AT EMA20 support (price dipped and recovered)
+          SWING    → trend continuation AFTER confirmed heavy buying (price making ground)
+
+        The MARUBOZU candle itself defines the stop-loss level: the candle's low is where
+        buyers halted the last attempt to push price lower. If price retreats below it,
+        the buy signal is invalidated. This gives a natural, well-defined risk reference
+        unlike a "near EMA20 but not yet there" entry which has no structural support.
+
+        If both SWING and PULLBACK qualify (e.g. MARUBOZU at EMA20), PULLBACK wins (priority 2 > 1).
+        SWING fires only when PULLBACK doesn't — i.e. the MARUBOZU occurs above EMA20 in an active trend.
         """
-        # SWING only works in uptrend market conditions — no use trend-following in a sideways/bear market
         if mode not in [MarketMode.NORMAL, MarketMode.AGGRESSIVE]:
             return None
-        # No new SWING entries before 10 AM — opening auction creates false signals.
-        # By 10 AM the direction is confirmed and price has found its intraday level.
-        if datetime.now().hour < 10:
-            return None
-        # FVG avoidance: price inside a recent unfilled gap = uncertain direction.
-        # SWING needs clean trend momentum — entering mid-gap is low confidence.
+
+        # Price inside a recent FVG = direction uncertain (filling an imbalance, not confirming trend)
         if data.in_fvg_zone:
             return None
 
-        checks = [
-            data.close > data.ema_20,          # price above short-term trend line
-            data.ema_20 > data.ema_50,          # short-term EMA above medium-term — trend intact
-            45 <= data.rsi <= 65,               # healthy momentum zone: not overbought (>65), not weak (<45)
-            data.macd > data.macd_signal,       # MACD line above signal line → momentum positive
-            data.macd_hist > 0,                 # histogram > 0 means momentum is accelerating upward
-            data.volume_ratio > 1.2,            # volume 20%+ above average — real buying, not just drift
-            data.tf_aligned_count >= 2,         # at least 2 of 3 timeframes (weekly/daily/4H) bullish
-        ]
-
-        # Need at least 6 out of 7 checks — allows one minor failure (e.g. volume slightly low)
-        if sum(checks) < 6:
+        # Hard gate: must be a MARUBOZU candle — the definitive institutional conviction signal.
+        # MARUBOZU = body ≥ 85% of range + volume ≥ 1.5× 20-day avg (both confirmed by detector).
+        # No MARUBOZU = no entry, regardless of how good everything else looks.
+        if data.candle_pattern != "MARUBOZU":
             return None
 
-        # Create the Setup object. entry_price = yesterday's close (will be updated to live price in step5)
+        # Hard gate: ADX > 22 confirms the trend is REAL, not a one-day spike in a ranging stock.
+        # A MARUBOZU in a ranging stock (ADX < 22) is often an overreaction — 50% chance of reversal.
+        # ADX > 22 means directional momentum has been building across many sessions.
+        if data.adx < 22:
+            return None
+
+        # Hard gate: +DI > -DI (bulls dominating). ADX measures strength, not direction.
+        # A MARUBOZU in a strong downtrend also has ADX > 22 but we want uptrend continuation.
+        if not data.adx_trending:
+            return None
+
+        # Hard gate: RSI 52-72 — strong momentum but not extreme.
+        # Below 52: the MARUBOZU was small relative to recent history (weak signal).
+        # Above 72: overbought — the MARUBOZU may be a final exhaustion burst before reversal.
+        if not (52 <= data.rsi <= 72):
+            return None
+
+        checks = [
+            data.close > data.ema_20,       # price above short-term trend line
+            data.ema_20 > data.ema_50,      # EMA structure bullish (trend intact)
+            data.close > data.ema_200,      # long-term uptrend intact
+            data.macd > data.macd_signal,   # MACD above signal = momentum crossover
+            data.macd_hist > 0,             # histogram positive = momentum accelerating
+            data.weekly_bullish,            # weekly timeframe in agreement
+            data.tf_aligned_count >= 2,     # 2+ timeframes bullish
+        ]
+
+        # 5 of 7 checks required — MARUBOZU + ADX already provide two hard confirmations,
+        # so slight softness in checks (e.g. close near EMA20) is acceptable.
+        if sum(checks) < 5:
+            return None
+
+        score = self._score(data, checks)
+        # Note: _score() adds +15 for MARUBOZU pattern automatically — no separate bonus needed.
+
         return Setup(symbol=symbol, date=datetime.now().strftime("%Y-%m-%d"),
-                     strategy=StrategyType.SWING, score=self._score(data, checks),
+                     strategy=StrategyType.SWING, score=score,
                      entry_price=data.close, market_mode=mode.value, fii_flow="")
 
     def _check_breakout(self, symbol, data, mode, fii_sector_buying: bool = False):
@@ -147,8 +180,10 @@ class StrategyEngine:
         extra score points — explosive volume on a breakout is a very strong signal.
         FII sector buying adds +10: institutional tailwind behind the breakout = higher continuation.
         """
-        # BREAKOUT doesn't work in DEFENSIVE/CASH — no upward momentum in those regimes
-        if mode in [MarketMode.DEFENSIVE, MarketMode.CASH]:
+        # BREAKOUT requires a confirmed bull market (AGGRESSIVE mode: all EMAs aligned + FII buying).
+        # In NORMAL mode (FII neutral) breakouts have ~10% win rate in range-bound markets
+        # because volume spikes are noise, not sustained momentum. Backtest 2024 confirmed this.
+        if mode != MarketMode.AGGRESSIVE:
             return None
         # FVG avoidance: a breakout starting inside an FVG zone is suspect —
         # price may just be oscillating within the imbalance, not truly breaking out.
@@ -160,6 +195,12 @@ class StrategyEngine:
         if data.volume_ratio < 2.0:
             return None
 
+        # Hard gate: must be above the 200 EMA (long-term uptrend).
+        # A "breakout" in a stock below EMA200 is breaking out of a consolidation inside
+        # a primary downtrend — these have very low continuation rates.
+        if data.ema_200 > 0 and data.close < data.ema_200:
+            return None
+
         checks = [
             data.consolidation_range_pct < 8.0,  # 20-day range < 8% of price = stock was coiling
             data.close > data.ema_50,             # price above medium-term trend — breakout has support
@@ -167,7 +208,7 @@ class StrategyEngine:
             data.macd > data.macd_signal,         # MACD says momentum is positive
             data.volume_ratio > 2.0,              # volume at least 2x average (redundant with hard gate, but scores it)
             data.obv_rising,                      # OBV rising = institutional accumulation behind the move
-            data.tf_aligned_count >= 1,           # at least 1 other timeframe bullish (daily breakout has some backing)
+            data.tf_aligned_count >= 2,           # 2+ timeframes bullish — daily breakout confirmed by weekly or 4H
         ]
 
         # Need at least 6 of 7
@@ -192,15 +233,10 @@ class StrategyEngine:
 
     def _check_pullback(self, symbol, data, mode, fii_sector_buying: bool = False):
         """
-        Pullback to 20 EMA in an uptrend. Hard gate: price must be within 0.3 × ATR of
-        EMA20. Fixed % gates are too tight for high-ATR stocks (e.g. RELIANCE) and too
-        loose for low-ATR stocks — ATR-scaled zone adapts to each stock's volatility.
-        RSI 40-52: momentum has cooled but not broken (< 40 = actual breakdown).
-        Low volume (< 1.5x avg) on the pullback confirms it's consolidation, not
-        distribution. A HAMMER or BULLISH_ENGULFING candle at this level is a
-        strong reversal signal → +15 bonus score.
-        FII sector buying adds +15: pullback into EMA20 in a sector with institutional
-        buying = two reasons to bounce (technical support + institutional demand).
+        Pullback to 20 EMA in an uptrend. Hard gates: price within 0.3×ATR of EMA20,
+        stock above EMA200, EMA20 > EMA50. RSI 50-60: momentum cooled but still bullish.
+        Low volume (< 1.5x avg): consolidation dip, not distribution. 6 of 7 soft checks
+        required. HAMMER/BULLISH_ENGULFING candle → +15 score. FII sector buying → +15.
         """
         # PULLBACK needs a confirmed uptrend to pull back in — not valid in SELECTIVE/CAUTIOUS/DEFENSIVE
         if mode not in [MarketMode.NORMAL, MarketMode.AGGRESSIVE]:
@@ -214,15 +250,44 @@ class StrategyEngine:
         if data.ema_20 == 0:
             return None
 
-        # Hard gate: price must be within 0.3 × ATR of EMA20.
-        # ATR-scaled zone adapts per stock — wider for volatile stocks, tighter for calm ones.
-        # A real pullback bounce closes within this band: the low touched EMA20, close bounced above it.
-        if data.atr > 0 and abs(data.close - data.ema_20) > 0.3 * data.atr:
+        # Hard gate: must be in a long-term uptrend (above EMA200).
+        # Pullbacks in stocks below EMA200 are bounces inside a downtrend, not uptrend entries.
+        if data.ema_200 > 0 and data.close < data.ema_200:
             return None
 
+        # Hard gate: short-term trend must be above medium-term (uptrend structure intact).
+        # If EMA20 <= EMA50, the short-term trend has crossed below mid-term — stock is weakening.
+        if data.ema_20 > 0 and data.ema_50 > 0 and data.ema_20 <= data.ema_50:
+            return None
+
+        # Hard gate: close must be AT or above EMA20.
+        # A genuine pullback bounce closes ABOVE the EMA — the low touched it, buyers stepped in,
+        # and price recovered above it by end of day. If close < EMA20, the stock is still below
+        # its short-term trend line — the bounce hasn't happened yet. Don't catch a falling knife.
+        if data.close < data.ema_20:
+            return None
+
+        # Hard gate: close must not be too far above EMA20 (not too late to enter).
+        # If price has already run 0.3×ATR above EMA20, the optimal risk:reward entry is missed.
+        if data.atr > 0 and (data.close - data.ema_20) > 0.3 * data.atr:
+            return None
+
+        # ADX filter: stock must have a real trend to pull back FROM.
+        # ADX < 16 = stock is range-bound — EMA20 touches don't bounce reliably because
+        # there's no institutional directional momentum behind the move. The "pullback"
+        # is just random oscillation within a sideways range, not a retracement in a trend.
+        if data.adx > 0 and data.adx < 16:
+            return None
+
+        # Candle range quality: close must be in upper 55%+ of today's high-low range.
+        # A weak bounce closes near the day's low (e.g. close=₹100, range ₹95-102, → (100-95)/(102-95)=71% ✓).
+        # Any green candle (close > open) could be a +0.1% drift. This ensures genuine buyers pushed back hard.
+        day_range  = data.high - data.low
+        candle_quality = (data.close - data.low) / day_range > 0.55 if day_range > 0 else False
+
         checks = [
-            data.close > data.open,         # green candle on the pullback = buyers stepped in today
-            40 <= data.rsi <= 52,           # RSI cooled from uptrend highs but not broken below 40
+            candle_quality,                 # close in upper 45% of day range = buyers rejected the low strongly
+            50 <= data.rsi <= 60,           # RSI above 50 = bullish trend intact, below 60 = not overbought
             data.volume_ratio < 1.5,        # LOW volume on pullback = consolidation (not institutional selling)
             data.macd > 0,                  # MACD still positive = underlying trend intact
             data.weekly_bullish,            # weekly timeframe also bullish = higher-level trend supports entry

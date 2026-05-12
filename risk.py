@@ -11,7 +11,7 @@ Two classes live here:
    Stop loss placement is strategy-specific:
    - SWING:    entry − (ATR × 1.5)         standard swing SL
    - BREAKOUT: low of the consolidation box − (ATR × 0.5)  tight SL just below the box
-   - PULLBACK: EMA20 − (ATR × 1.0)         SL below the level being tested
+   - PULLBACK: EMA20 − (ATR × 1.5)         SL below the level being tested
    - WEEK52:   52W high − (ATR × 1.5)      SL just below the breakout level
 
    After sizing, RiskManager checks that the R:R ratio is at least 2.0 (1 risk : 2 reward).
@@ -114,9 +114,11 @@ class RiskManager:
             sl = stock_data.week_52_high - (atr * 1.5)
 
         elif setup.strategy == StrategyType.PULLBACK:
-            # For PULLBACK: SL just below the EMA20 being tested.
+            # For PULLBACK: SL 1.5×ATR below EMA20.
+            # Entry is within 0.3×ATR of EMA20, so the gap to SL is at least 1.2×ATR —
+            # enough buffer to survive normal daily noise without premature SL hits.
             # The logic: we're buying at EMA20 support. If price breaks BELOW EMA20, the setup is invalid.
-            sl = stock_data.ema_20 - (atr * 1.0)  # small ATR buffer below EMA20
+            sl = stock_data.ema_20 - (atr * 1.5)
 
         # How much can we lose per share if SL is hit?
         risk_per_share = entry - sl

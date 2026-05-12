@@ -34,6 +34,11 @@ from config import Config, Watchlist, log
 from models import MarketMode
 from database import DatabaseManager
 
+# Sectors where PULLBACK strategy consistently loses money based on 2022-2024 backtest data.
+# These sectors have poor trend continuity — pullbacks to EMA20 rarely bounce sustainably.
+# Expectancy from analyze_params.py: FMCG=-0.98%, PHARMA=-1.70%, INFRA=-0.96%, METALS=-0.27%
+WEAK_PULLBACK_SECTORS = {"FMCG", "PHARMA", "INFRA", "METALS"}
+
 
 class StockScreener:
     """
@@ -91,6 +96,13 @@ class StockScreener:
             sector = Watchlist.get_sector(symbol)
             if sector in open_sectors:
                 reasons.append(f"Sector {sector} already open")
+
+            # --- Filter 3b: Weak pullback sector ---
+            # FMCG, PHARMA, INFRA, METALS show negative expectancy for PULLBACK strategy.
+            # Stocks in these sectors structurally underperform on EMA20 pullback bounces.
+            # Skip them entirely rather than wasting capital on low-probability entries.
+            if sector in WEAK_PULLBACK_SECTORS:
+                reasons.append(f"Weak pullback sector ({sector}) — historically unprofitable")
 
             # --- Filter 4: Upcoming RED event (earnings/results within 5 days) ---
             # Query events_calendar for this specific stock.
