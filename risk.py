@@ -303,21 +303,46 @@ class ChargesCalculator:
 
     @staticmethod
     def _manual_buy_charges(buy_value: float) -> float:
-        stt      = buy_value * Config.STT_DELIVERY
-        stamp    = buy_value * Config.STAMP_DUTY
+        """
+        NSE equity delivery buy-leg charges.
+        Components mirror what the Upstox /v2/charges/brokerage API returns:
+          stt          → taxes.stt           (0.1% on buy)
+          stamp        → taxes.stamp_duty    (0.015% on buy, state-mandated)
+          exchange     → other_charges.transaction  (NSE transaction 0.00297%)
+          gst          → taxes.gst           (18% on exchange charge)
+          sebi         → other_charges.sebi_turnover (₹10 per crore)
+          clearing     → other_charges.clearing      (NSE clearing 0.000325%)
+          ipft         → other_charges.ipft           (₹1 per crore)
+        Brokerage = ₹0 (Upstox delivery).
+        """
         exchange = buy_value * Config.EXCHANGE_CHARGE
-        gst      = exchange  * Config.GST_RATE
-        sebi     = buy_value * Config.SEBI_CHARGE
-        return stt + stamp + exchange + gst + sebi
+        return (
+            buy_value * Config.STT_DELIVERY          # STT on buy
+            + buy_value * Config.STAMP_DUTY          # stamp duty on buy
+            + exchange                               # NSE transaction charge
+            + exchange * Config.GST_RATE             # GST on exchange
+            + buy_value * Config.SEBI_CHARGE         # SEBI turnover fee
+            + buy_value * Config.CLEARING_CHARGE     # NSE clearing charge
+            + buy_value * Config.IPFT_CHARGE         # IPFT
+        )
 
     @staticmethod
     def _manual_sell_charges(sell_value: float) -> float:
-        stt      = sell_value * Config.STT_DELIVERY
-        dp       = Config.DP_CHARGE
+        """
+        NSE equity delivery sell-leg charges.
+        DP charge (₹15.34) is flat per sell transaction — included here once per call.
+        Call this separately for each sell leg (T2 partial + final exit) so each gets its own DP.
+        """
         exchange = sell_value * Config.EXCHANGE_CHARGE
-        gst      = exchange   * Config.GST_RATE
-        sebi     = sell_value * Config.SEBI_CHARGE
-        return stt + dp + exchange + gst + sebi
+        return (
+            sell_value * Config.STT_DELIVERY         # STT on sell
+            + Config.DP_CHARGE                       # DP charge: ₹15.34 flat per sell transaction
+            + exchange                               # NSE transaction charge
+            + exchange * Config.GST_RATE             # GST on exchange
+            + sell_value * Config.SEBI_CHARGE        # SEBI turnover fee
+            + sell_value * Config.CLEARING_CHARGE    # NSE clearing charge
+            + sell_value * Config.IPFT_CHARGE        # IPFT
+        )
 
     @staticmethod
     def calculate_trade_pnl(symbol: str, entry_price: float, exit_price: float,

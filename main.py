@@ -20,6 +20,16 @@ Usage:
   python main.py --dashboard      Just print today's analytics dashboard and exit.
                                   No trading, no data collection. Quick status check.
 
+  python main.py --backtest FROM TO [--capital N] [--refresh] [--verbose]
+                                  Run historical backtest using real Upstox data.
+                                  FROM / TO : date strings in YYYY-MM-DD format.
+                                  --capital N  : starting capital in ₹ (default 200000).
+                                  --refresh    : ignore cached data, re-fetch from API.
+                                  --verbose    : print full per-trade log at the end.
+                                  Example:
+                                    python main.py --backtest 2023-01-01 2024-12-31
+                                    python main.py --backtest 2022-01-01 2025-01-01 --refresh
+
 Required environment variables:
   UPSTOX_API_KEY       — from https://developer.upstox.com
   UPSTOX_API_SECRET    — from developer portal
@@ -116,10 +126,15 @@ def run_auth_setup():
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "test"
+    args = sys.argv[1:]
+    mode = args[0] if args else "test"
 
     if mode == "--auth":
         run_auth_setup()
+        return
+
+    if mode == "--backtest":
+        _run_backtest_mode(args)
         return
 
     system = TradingSystem()
@@ -140,6 +155,52 @@ def main():
 
     else:
         system.run_once_test()
+
+
+def _run_backtest_mode(args: list):
+    """
+    Parses --backtest arguments and calls backtest.run_backtest().
+
+    Expected format:
+      --backtest FROM TO [--capital N] [--refresh] [--verbose]
+    Example:
+      --backtest 2023-01-01 2024-12-31 --capital 300000 --refresh --verbose
+    """
+    from backtest import run_backtest
+
+    # Extract positional dates (first two non-flag args after --backtest)
+    dates     = [a for a in args[1:] if not a.startswith("--")]
+    flags     = [a for a in args[1:] if a.startswith("--")]
+
+    if len(dates) < 2:
+        print("Usage: python main.py --backtest FROM TO")
+        print("       FROM / TO format: YYYY-MM-DD")
+        print("       Options: --capital N   --refresh   --verbose")
+        print("Example: python main.py --backtest 2023-01-01 2024-12-31")
+        return
+
+    bt_start = dates[0]
+    bt_end   = dates[1]
+    refresh  = "--refresh" in flags
+    verbose  = "--verbose" in flags
+
+    # --capital N (integer rupees, e.g. --capital 300000)
+    capital = 200_000.0
+    for i, a in enumerate(args):
+        if a == "--capital" and i + 1 < len(args):
+            try:
+                capital = float(args[i + 1])
+            except ValueError:
+                print(f"Invalid --capital value: {args[i+1]}")
+                return
+
+    run_backtest(
+        bt_start        = bt_start,
+        bt_end          = bt_end,
+        initial_capital = capital,
+        refresh         = refresh,
+        verbose         = verbose,
+    )
 
 
 if __name__ == "__main__":

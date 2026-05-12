@@ -201,12 +201,14 @@ class Config:
     SL_REPLACE_RETRY_DELAY = 2     # seconds between retries
 
     # --- NSE equity delivery charges — fallback rates (used only if Upstox brokerage API fails) ---
-    STT_DELIVERY    = 0.001      # 0.1% on both buy and sell
-    DP_CHARGE       = 15.34      # flat ₹15.34 per sell transaction (demat charge)
-    EXCHANGE_CHARGE = 0.0000297  # NSE transaction charge
-    STAMP_DUTY      = 0.00015    # 0.015% on buy side only
-    GST_RATE        = 0.18       # 18% GST on exchange charges
-    SEBI_CHARGE     = 0.000001   # SEBI regulatory fee
+    STT_DELIVERY    = 0.001        # 0.1% on both buy and sell
+    DP_CHARGE       = 15.34        # flat ₹15.34 per sell transaction (demat charge)
+    EXCHANGE_CHARGE = 0.0000297    # NSE transaction charge (0.00297%)
+    STAMP_DUTY      = 0.00015      # 0.015% on buy side only
+    GST_RATE        = 0.18         # 18% GST on exchange charges
+    SEBI_CHARGE     = 0.000001     # SEBI regulatory fee (₹10 per crore)
+    CLEARING_CHARGE = 0.00000325   # NSE clearing charge (₹32.5 per crore, 0.000325%)
+    IPFT_CHARGE     = 0.0000000001 # IPFT (₹1 per crore — negligible)
 
     # --- NSE public API endpoints (no auth needed, cookie-based) ---
     NSE_BASE        = "https://www.nseindia.com"
